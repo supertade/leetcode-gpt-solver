@@ -1,0 +1,23 @@
+# Core dependencies
+streamlit>=1.32.0
+pandas>=2.2.0
+requests>=2.31.0
+
+# Data processing and visualization
+beautifulsoup4>=4.12.0
+html2text>=2024.2.26
+
+# API Clients
+anthropic>=0.18.0  # For Claude API
+deepseek>=0.1.0   # For DeepSeek API
+
+# Development and testing
+pytest>=8.0.0
+black>=24.2.0
+flake8>=7.0.0
+
+# Utilities
+python-dotenv>=1.0.0  # For environment variable management
+typing-extensions>=4.9.0
+attrs>=23.2.0
+watchdog>=3.0.0  # Für Streamlit hot-reloading 
