@@ -15,6 +15,8 @@ from sandbox.executor import test_solution
 from utils.clean import clean_html, extract_code_block, parse_testcases
 # Import der neuen Heatmap-Visualisierung
 from heatmap_viz import add_heatmap_tab
+# Import der neuen LeetCode-Submission-Komponenten
+from utils.submission_ui import show_submission_section, reset_submission_state
 
 st.set_page_config(page_title="LeetCode LLM Evaluator", layout="wide")
 st.title("LeetCode LLM Evaluator")
@@ -836,8 +838,8 @@ with tab1:
             st.markdown("---")
             solution_container = st.container()
             with solution_container:
-                # Lösung in zwei Tabs anzeigen: "Lösung" und "Testergebnisse"
-                solution_tab, results_tab = st.tabs(["Generierte Lösung", "Testergebnisse"])
+                # Lösung in drei Tabs anzeigen: "Lösung", "Testergebnisse" und "LeetCode Submission"
+                solution_tab, results_tab, submission_tab = st.tabs(["Generierte Lösung", "Testergebnisse", "LeetCode Submission"])
                 
                 with solution_tab:
                     st.code(st.session_state.current_solution["code"], language="cpp")
@@ -870,6 +872,29 @@ with tab1:
                                     st.code(f"Fehlermeldung: {result['result'].get('error', 'Keine Fehlermeldung verfügbar')}")
                     else:
                         st.info("Keine Testergebnisse verfügbar.")
+                
+                with submission_tab:
+                    # LeetCode-Submission UI anzeigen
+                    if st.session_state.current_problem and st.session_state.current_solution:
+                        # Banner entfernen
+                        show_submission_section(
+                            problem_slug=st.session_state.current_problem['slug'],
+                            code=st.session_state.current_solution['code']
+                        )
+                    else:
+                        # Ansprechendere Nachricht mit Icon
+                        st.markdown("""
+                        <div style="text-align: center; padding: 2.5rem 1.5rem; background-color: #f7f9fc; border-radius: 4px; margin: 1.5rem 0; border: 1px solid #e0e6ed;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6c757d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="12" y1="18" x2="12" y2="12"></line>
+                                <line x1="9" y1="15" x2="15" y2="15"></line>
+                            </svg>
+                            <h3 style="color: #3d5a80; font-weight: 400; margin: 1rem 0 0.5rem 0; font-size: 1rem;">Generate a solution first</h3>
+                            <p style="color: #6c757d; font-size: 0.9rem; max-width: 400px; margin: 0 auto;">Create a solution in the "Generate Solution" section before submitting to LeetCode.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
 
 # Tab 2: Prompt anpassen
 with tab2:
@@ -1176,6 +1201,16 @@ with tab3:
                 # Filter nach Titel
                 if filter_search and filter_search.lower() not in result["title"].lower():
                     continue
+                
+                # Bestimme die Art der Einreichung
+                submission_type = result.get("submission_type", "local_test")
+                submission_type_label = "🌐 LeetCode" if submission_type == "leetcode_api" else "🖥️ Lokal"
+                
+                # Erweiterte Fehlerinformationen für LeetCode-Submissions
+                error_info = result.get("error_type", "None") if not result["success"] else "None"
+                if submission_type == "leetcode_api" and not result["success"]:
+                    leetcode_status = result.get("leetcode_status", "Unknown")
+                    error_info = f"{leetcode_status} (LeetCode)"
                     
                 # Füge zum Ergebnis hinzu
                 all_results.append({
@@ -1183,7 +1218,8 @@ with tab3:
                     "Title": result["title"],
                     "Slug": result["slug"],
                     "Success": "✅" if result["success"] else "❌",
-                    "Error Type": result.get("error_type", "None") if not result["success"] else "None",
+                    "Type": submission_type_label,
+                    "Error Type": error_info,
                     "Model": result.get("model", "Unknown"),
                     "Temp": result.get("temperature", "0.7"),
                     "Timestamp": result["timestamp"]
@@ -1235,7 +1271,7 @@ with tab4:
     
     if any(len(results) > 0 for results in st.session_state.results.values()):
         # Tabs für verschiedene Statistikansichten
-        stat_tab1, stat_tab2, stat_tab3, stat_tab4 = st.tabs(["Allgemeine Statistik", "Modell-Vergleich", "Fehleranalyse nach Modell", "Heatmap"])
+        stat_tab1, stat_tab2, stat_tab3, stat_tab4, stat_tab5 = st.tabs(["Allgemeine Statistik", "Modell-Vergleich", "Fehleranalyse nach Modell", "Lokal vs. LeetCode", "Heatmap"])
         
         # Tab 1: Allgemeine Statistik (bisherige Funktionalität)
         with stat_tab1:
@@ -1302,41 +1338,92 @@ with tab4:
             st.subheader("Häufigste Fehlertypen")
             
             error_types = {}
+            leetcode_errors = {}
+            
             for difficulty, results in st.session_state.results.items():
                 for result in results:
                     if not result["success"] and result.get("error_type"):
                         error_type = result.get("error_type")
-                        if error_type not in error_types:
-                            error_types[error_type] = 0
-                        error_types[error_type] += 1
+                        
+                        # Unterscheide zwischen lokalen Tests und LeetCode-Submissions
+                        if "leetcode" in error_type.lower():
+                            if error_type not in leetcode_errors:
+                                leetcode_errors[error_type] = 0
+                            leetcode_errors[error_type] += 1
+                        else:
+                            if error_type not in error_types:
+                                error_types[error_type] = 0
+                            error_types[error_type] += 1
             
-            if error_types:
-                error_df = pd.DataFrame([
-                    {"Error Type": error_type, "Count": count}
-                    for error_type, count in error_types.items()
-                ])
-                error_df = error_df.sort_values("Count", ascending=False)
+            # Zeige sowohl lokale als auch LeetCode-Fehler an
+            if error_types or leetcode_errors:
+                # Lokale Testfehler
+                if error_types:
+                    st.markdown("##### Fehler bei lokalen Tests")
+                    error_df = pd.DataFrame([
+                        {"Error Type": error_type, "Count": count}
+                        for error_type, count in error_types.items()
+                    ])
+                    error_df = error_df.sort_values("Count", ascending=False)
+                    
+                    # Balkendiagramm für Fehlertypen
+                    st.bar_chart(error_df.set_index("Error Type"), height=250)
+                    st.dataframe(error_df, use_container_width=True)
                 
-                # Balkendiagramm für Fehlertypen
-                st.bar_chart(error_df.set_index("Error Type"), height=300)
-                
-                # Detaillierte Fehleranalyse
-                st.subheader("Detaillierte Fehleranalyse")
-                st.dataframe(error_df, use_container_width=True)
+                # LeetCode-Fehler
+                if leetcode_errors:
+                    st.markdown("##### Fehler bei LeetCode-Submissions")
+                    leetcode_error_df = pd.DataFrame([
+                        {"Error Type": error_type.replace("_leetcode", ""), "Count": count}
+                        for error_type, count in leetcode_errors.items()
+                    ])
+                    leetcode_error_df = leetcode_error_df.sort_values("Count", ascending=False)
+                    
+                    # Balkendiagramm für LeetCode-Fehlertypen
+                    st.bar_chart(leetcode_error_df.set_index("Error Type"), height=250)
+                    st.dataframe(leetcode_error_df, use_container_width=True)
                 
                 # Empfehlungen basierend auf häufigsten Fehlern
-                if len(error_df) > 0:
-                    st.subheader("Empfehlungen")
-                    top_error = error_df.iloc[0]["Error Type"]
-                    
+                st.subheader("Empfehlungen")
+                
+                # Bestimme häufigsten Fehlertyp
+                top_error = None
+                top_error_count = 0
+                
+                for error_type, count in error_types.items():
+                    if count > top_error_count:
+                        top_error = error_type
+                        top_error_count = count
+                
+                if top_error:
                     if "syntax" in top_error.lower():
-                        st.info("💡 **Tipp**: Die häufigsten Fehler sind Syntaxfehler. Achte besonders auf korrekte Semikolons und Klammerung in deinem Prompt-Template.")
+                        st.info("💡 **Tipp für lokale Tests**: Die häufigsten Fehler sind Syntaxfehler. Achte besonders auf korrekte Semikolons und Klammerung in deinem Prompt-Template.")
                     elif "undefined" in top_error.lower():
-                        st.info("💡 **Tipp**: Viele Fehler beziehen sich auf undefinierte Referenzen. Verbessere dein Prompt-Template, um sicherzustellen, dass alle Funktionen vollständig implementiert werden.")
+                        st.info("💡 **Tipp für lokale Tests**: Viele Fehler beziehen sich auf undefinierte Referenzen. Verbessere dein Prompt-Template, um sicherzustellen, dass alle Funktionen vollständig implementiert werden.")
                     elif "compile" in top_error.lower():
-                        st.info("💡 **Tipp**: Compilerfehler treten häufig auf. Achte darauf, dass dein Prompt die Einbindung aller benötigten Header-Dateien anweist.")
+                        st.info("💡 **Tipp für lokale Tests**: Compilerfehler treten häufig auf. Achte darauf, dass dein Prompt die Einbindung aller benötigten Header-Dateien anweist.")
                     else:
-                        st.info(f"💡 **Tipp**: Analysiere die häufigsten Fehler vom Typ '{top_error}' und passe dein Prompt-Template entsprechend an.")
+                        st.info(f"💡 **Tipp für lokale Tests**: Analysiere die häufigsten Fehler vom Typ '{top_error}' und passe dein Prompt-Template entsprechend an.")
+                
+                # Empfehlungen für LeetCode-Fehler
+                top_leetcode_error = None
+                top_leetcode_count = 0
+                
+                for error_type, count in leetcode_errors.items():
+                    if count > top_leetcode_count:
+                        top_leetcode_error = error_type
+                        top_leetcode_count = count
+                
+                if top_leetcode_error:
+                    clean_error = top_leetcode_error.replace("_leetcode", "")
+                    if "wrong_answer" in top_leetcode_error:
+                        st.info("💡 **Tipp für LeetCode-Submissions**: Die häufigsten Fehler sind falsche Antworten. Achte darauf, dass deine Lösungen alle Randfälle (edge cases) behandeln.")
+                    elif "performance" in top_leetcode_error:
+                        st.info("💡 **Tipp für LeetCode-Submissions**: Optimiere die Laufzeit und den Speicherverbrauch deiner Lösungen.")
+                    elif "compile" in top_leetcode_error:
+                        st.info("💡 **Tipp für LeetCode-Submissions**: Überprüfe die Syntax und Bibliotheksimports für LeetCode-Submissions.")
+                    else:
+                        st.info(f"💡 **Tipp für LeetCode-Submissions**: Analysiere die häufigsten Fehler vom Typ '{clean_error}' und passe deine Lösungen entsprechend an.")
             else:
                 st.info("Bisher keine Fehler gefunden. Prima!")
         
@@ -1547,8 +1634,118 @@ with tab4:
                 for error_type, (model, rate) in best_models.items():
                     st.info(f"💡 Für Fehlertyp '{error_type}': **{model}** hat die niedrigste Fehlerrate ({rate})")
         
-        # Tab 4: Heatmap (neu)
-        add_heatmap_tab(stat_tab4)
+        # Tab 4: Lokal vs. LeetCode
+        with stat_tab4:
+            st.subheader("Vergleich: Lokale Tests vs. LeetCode-Submissions")
+            
+            # Zähle lokale Tests und LeetCode-Submissions
+            local_tests = {"total": 0, "success": 0, "easy": 0, "medium": 0, "hard": 0, "easy_success": 0, "medium_success": 0, "hard_success": 0}
+            leetcode_submissions = {"total": 0, "success": 0, "easy": 0, "medium": 0, "hard": 0, "easy_success": 0, "medium_success": 0, "hard_success": 0}
+            
+            for difficulty, results in st.session_state.results.items():
+                for result in results:
+                    submission_type = result.get("submission_type", "local_test")
+                    is_success = result.get("success", False)
+                    
+                    if submission_type == "leetcode_api":
+                        leetcode_submissions["total"] += 1
+                        leetcode_submissions[difficulty] += 1
+                        if is_success:
+                            leetcode_submissions["success"] += 1
+                            leetcode_submissions[f"{difficulty}_success"] += 1
+                    else:
+                        local_tests["total"] += 1
+                        local_tests[difficulty] += 1
+                        if is_success:
+                            local_tests["success"] += 1
+                            local_tests[f"{difficulty}_success"] += 1
+            
+            # Berechne Erfolgsraten
+            local_success_rate = (local_tests["success"] / local_tests["total"] * 100) if local_tests["total"] > 0 else 0
+            leetcode_success_rate = (leetcode_submissions["success"] / leetcode_submissions["total"] * 100) if leetcode_submissions["total"] > 0 else 0
+            
+            # Anzeige der Gesamtzahlen
+            st.markdown("##### Gesamtübersicht")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Lokale Tests", local_tests["total"], f"{local_success_rate:.1f}% Erfolg")
+                
+                # Details zu lokalen Tests
+                if local_tests["total"] > 0:
+                    easy_rate = (local_tests["easy_success"] / local_tests["easy"] * 100) if local_tests["easy"] > 0 else 0
+                    medium_rate = (local_tests["medium_success"] / local_tests["medium"] * 100) if local_tests["medium"] > 0 else 0
+                    hard_rate = (local_tests["hard_success"] / local_tests["hard"] * 100) if local_tests["hard"] > 0 else 0
+                    
+                    st.markdown(f"""
+                    - **Erfolgreiche Tests:** {local_tests["success"]} ({local_success_rate:.1f}%)
+                    - **Easy:** {local_tests["easy_success"]}/{local_tests["easy"]} ({easy_rate:.1f}%)
+                    - **Medium:** {local_tests["medium_success"]}/{local_tests["medium"]} ({medium_rate:.1f}%)
+                    - **Hard:** {local_tests["hard_success"]}/{local_tests["hard"]} ({hard_rate:.1f}%)
+                    """)
+            
+            with col2:
+                st.metric("LeetCode-Submissions", leetcode_submissions["total"], f"{leetcode_success_rate:.1f}% Erfolg")
+                
+                # Details zu LeetCode-Submissions
+                if leetcode_submissions["total"] > 0:
+                    easy_rate = (leetcode_submissions["easy_success"] / leetcode_submissions["easy"] * 100) if leetcode_submissions["easy"] > 0 else 0
+                    medium_rate = (leetcode_submissions["medium_success"] / leetcode_submissions["medium"] * 100) if leetcode_submissions["medium"] > 0 else 0
+                    hard_rate = (leetcode_submissions["hard_success"] / leetcode_submissions["hard"] * 100) if leetcode_submissions["hard"] > 0 else 0
+                    
+                    st.markdown(f"""
+                    - **Erfolgreiche Submissions:** {leetcode_submissions["success"]} ({leetcode_success_rate:.1f}%)
+                    - **Easy:** {leetcode_submissions["easy_success"]}/{leetcode_submissions["easy"]} ({easy_rate:.1f}%)
+                    - **Medium:** {leetcode_submissions["medium_success"]}/{leetcode_submissions["medium"]} ({medium_rate:.1f}%)
+                    - **Hard:** {leetcode_submissions["hard_success"]}/{leetcode_submissions["hard"]} ({hard_rate:.1f}%)
+                    """)
+            
+            # Visualisierung des Vergleichs
+            if local_tests["total"] > 0 or leetcode_submissions["total"] > 0:
+                st.markdown("##### Erfolgsraten im Vergleich")
+                
+                compare_data = pd.DataFrame([
+                    {"Type": "Lokale Tests", "Success Rate": local_success_rate, "Total": local_tests["total"]},
+                    {"Type": "LeetCode", "Success Rate": leetcode_success_rate, "Total": leetcode_submissions["total"]}
+                ])
+                
+                st.bar_chart(compare_data.set_index("Type")["Success Rate"], height=300)
+                
+                # Vergleich nach Schwierigkeitsgrad
+                st.markdown("##### Erfolgsraten nach Schwierigkeitsgrad")
+                
+                difficulty_data = []
+                
+                for diff in ["easy", "medium", "hard"]:
+                    local_rate = (local_tests[f"{diff}_success"] / local_tests[diff] * 100) if local_tests[diff] > 0 else 0
+                    leetcode_rate = (leetcode_submissions[f"{diff}_success"] / leetcode_submissions[diff] * 100) if leetcode_submissions[diff] > 0 else 0
+                    
+                    difficulty_data.append({"Type": "Lokale Tests", "Difficulty": diff.capitalize(), "Success Rate": local_rate})
+                    difficulty_data.append({"Type": "LeetCode", "Difficulty": diff.capitalize(), "Success Rate": leetcode_rate})
+                
+                diff_df = pd.DataFrame(difficulty_data)
+                
+                # Gruppiertes Balkendiagramm für Schwierigkeitsgrade je Typ
+                chart_data = diff_df.pivot(index="Difficulty", columns="Type", values="Success Rate")
+                st.bar_chart(chart_data, height=400)
+                
+                # Fazit
+                st.subheader("Fazit")
+                
+                if local_tests["total"] > 0 and leetcode_submissions["total"] > 0:
+                    if local_success_rate > leetcode_success_rate:
+                        diff = local_success_rate - leetcode_success_rate
+                        st.info(f"Lokale Tests haben eine um {diff:.1f}% höhere Erfolgsrate als LeetCode-Submissions. Dies könnte darauf hindeuten, dass die lokalen Tests nicht alle Randfälle abdecken, die LeetCode prüft.")
+                    elif leetcode_success_rate > local_success_rate:
+                        diff = leetcode_success_rate - local_success_rate
+                        st.info(f"LeetCode-Submissions haben eine um {diff:.1f}% höhere Erfolgsrate als lokale Tests. Die lokalen Tests scheinen strenger zu sein als die LeetCode-Validierung.")
+                    else:
+                        st.info("Lokale Tests und LeetCode-Submissions haben identische Erfolgsraten. Dies deutet auf robuste und zuverlässige lokale Tests hin.")
+            else:
+                st.info("Nicht genügend Daten für einen Vergleich. Führe sowohl lokale Tests als auch LeetCode-Submissions durch.")
+        
+        # Tab 5: Heatmap (neu)
+        add_heatmap_tab(stat_tab5)
     else:
         st.info("Noch keine Ergebnisse verfügbar für Statistiken. Löse einige Probleme, um hier Statistiken zu sehen.")
         
@@ -1564,4 +1761,12 @@ with tab4:
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.info("Entwickelt zur Evaluation von LLMs bei der Lösung von LeetCode-Problemen.") 
+st.sidebar.info("Entwickelt zur Evaluation von LLMs bei der Lösung von LeetCode-Problemen.")
+
+# Lösche bisherige Test-Resultate bei einer neuen Generierung
+reset_button = st.button("Tests zurücksetzen", key="reset_tests", use_container_width=True)
+if reset_button:
+    st.session_state.current_results = None
+    # Zurücksetzen des Submission-Status
+    reset_submission_state()
+    st.rerun() 
