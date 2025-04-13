@@ -260,21 +260,7 @@ with tab1:
     st.header("Problem auswählen")
     
     # Terminal-Ausgabe (collapsed by default)
-    with st.expander("Terminal-Ausgabe", expanded=False):
-        # Erstelle einen Container für die Terminal-Ausgabe
-        terminal_container = st.container()
-        with terminal_container:
-            # Darstellung als Code-Block mit Monospace-Font
-            if st.session_state.terminal_output:
-                terminal_text = "\n".join(st.session_state.terminal_output)
-                st.text_area("System-Log", terminal_text, height=200, key="terminal_display", disabled=True)
-            else:
-                st.text("Noch keine Ausgabe verfügbar.")
-        
-        # Button zum Löschen des Terminals
-        if st.button("Terminal leeren", key="clear_terminal"):
-            st.session_state.terminal_output = []
-            st.rerun()
+    # Entferne die gesamte Terminal-Ausgabekomponente
     
     # Haupt-Steuerelemente für Problem-Auswahl
     st.subheader("Zufälliges Problem laden")
@@ -764,30 +750,6 @@ with tab1:
 
     # Problem anzeigen, wenn vorhanden
     if st.session_state.current_problem:
-        st.markdown("---")
-        
-        # Wenn es aktive Probleme gibt, zeige einen Dropdown zum Wechseln
-        if st.session_state.active_problems:
-            st.subheader("Aktive Probleme")
-            problem_options = [(slug, details["title"]) for slug, details in st.session_state.active_problems.items()]
-            selected_option = st.selectbox(
-                "Wähle ein Problem aus",
-                options=[slug for slug, _ in problem_options],
-                format_func=lambda x: next((title for slug, title in problem_options if slug == x), x),
-                index=next((i for i, (slug, _) in enumerate(problem_options) 
-                          if slug == st.session_state.current_problem["slug"]), 0)
-            )
-            
-            # Wenn ein anderes Problem ausgewählt wurde, ändere das current_problem
-            if selected_option != st.session_state.current_problem["slug"]:
-                st.session_state.current_problem = st.session_state.active_problems[selected_option]
-                # Setze auch die aktuelle Lösung, falls verfügbar
-                if selected_option in st.session_state.solutions:
-                    st.session_state.current_solution = st.session_state.solutions[selected_option]
-                else:
-                    st.session_state.current_solution = None
-                st.rerun()
-        
         # Erstelle eine "Karte" für das aktuelle Problem
         problem_container = st.container()
         with problem_container:
@@ -905,6 +867,13 @@ with tab1:
                 with submission_tab:
                     # Use submission language from session state
                     show_submission_section(st.session_state.current_problem['slug'], st.session_state.current_solution["code"])
+                    
+                    # Zurücksetzen des Submission-Status
+                    reset_button = st.button("LeetCode-Submission zurücksetzen", key="reset_submission", use_container_width=True)
+                    if reset_button:
+                        # Zurücksetzen des Submission-Status
+                        reset_submission_state()
+                        st.rerun()
 
 # Tab 2: Prompt anpassen
 with tab2:
@@ -1082,10 +1051,21 @@ Gib nur das verbesserte Prompt-Template zurück, ohne Erklärungen.
     
     # Hauptbereich für die Prompt-Eingabe
     st.subheader("Prompt-Template bearbeiten")
+    
+    # Info-Box für verfügbare Platzhalter oberhalb des Eingabefelds
+    st.info("""
+    Verfügbare Platzhalter:
+    - {title} - Titel des Problems
+    - {question} - Beschreibung des Problems
+    - {examples} - Beispieltestfälle
+    """)
+    
+    # Prompt-Eingabefeld über die volle Breite
     prompt_text = st.text_area("Prompt-Inhalt", st.session_state.prompt_template, height=300)
     
-    save_col, info_col = st.columns([1, 3])
-    with save_col:
+    # Speichern-Button
+    save_container = st.container()
+    with save_container:
         if st.button("Template speichern", key="save_template", use_container_width=True):
             # Automatisch bereinigen, bevor es gespeichert wird
             cleaned_prompt = clean_template(prompt_text)
@@ -1094,14 +1074,6 @@ Gib nur das verbesserte Prompt-Template zurück, ohne Erklärungen.
                 
             st.session_state.prompt_template = cleaned_prompt
             st.success("Prompt-Template aktualisiert!")
-    
-    with info_col:
-        st.info("""
-        Verfügbare Platzhalter:
-        - {title} - Titel des Problems
-        - {question} - Beschreibung des Problems
-        - {examples} - Beispieltestfälle
-        """)
     
     # Vorschau des aktuellen Prompts
     if st.session_state.current_problem:
@@ -1898,10 +1870,3 @@ Um die Sprache zu ändern, müsstest du im Code des Tools:
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.info("Entwickelt zur Evaluation von LLMs bei der Lösung von LeetCode-Problemen.")
-
-# Zurücksetzen des Submission-Status
-reset_button = st.button("LeetCode-Submission zurücksetzen", key="reset_submission", use_container_width=True)
-if reset_button:
-    # Zurücksetzen des Submission-Status
-    reset_submission_state()
-    st.rerun() 

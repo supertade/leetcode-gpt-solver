@@ -128,7 +128,7 @@ def display_model_error_heatmap(session_state_results):
     
     # Heatmap anzeigen
     st.subheader("Heatmap: Fehlerraten nach Modell und Fehlertyp")
-    st.image(heatmap_img, use_container_width=True)
+    st.image(heatmap_img, width=700)
     
     # Einige Beobachtungen hinzufügen
     st.markdown("#### Beobachtungen")
@@ -187,7 +187,7 @@ def add_heatmap_tab(tab):
             
             # Generiere Beispiel-Heatmap
             example_heatmap = generate_heatmap(example_data, title="Beispiel: Fehlerraten nach Modell und Fehlertyp (%)")
-            st.image(example_heatmap, use_container_width=True)
+            st.image(example_heatmap, width=700)
             
             st.caption("So wird deine Heatmap aussehen, sobald du Probleme mit verschiedenen Modellen gelöst hast.")
         else:
