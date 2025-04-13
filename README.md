@@ -54,28 +54,24 @@ leetcode-gpt-solver/
 │   ├── __init__.py
 │   ├── config.py          # Konfigurationsdatei
 │   ├── prompt_generator.py # Prompt-Generierung
-│   ├── test_runner.py     # Testausführung
 │   ├── problem_processor.py # Problemverarbeitung
 │   └── stats_manager.py   # Statistikverwaltung
-└── sandbox/               # Sandbox für Code-Ausführung
-    └── executor.py       # Code-Ausführung und Fehlerbehandlung
+└── api/                   # API-Interaktionen
+    ├── leetcode.py        # LeetCode API-Zugriff
+    └── leetcode_submit.py # LeetCode-Submission
 ```
 
-## Fehlertypen
+## Funktionsweise
 
-Das System erkennt verschiedene Fehlertypen:
-
-- Syntax-Fehler (missing_semicolon, unexpected_semicolon, etc.)
-- Typ-Fehler (type_error, conversion_error, etc.)
-- Argument-Fehler (argument_count_error, parameter_type_error)
-- Laufzeit-Fehler (array_index_error, null_pointer_error, etc.)
+Dieses Tool generiert Lösungen für LeetCode-Probleme mit verschiedenen Sprachmodellen und reicht sie direkt bei LeetCode ein. 
+Die Auswertung erfolgt über die nativen LeetCode-Tests, was eine präzisere Validierung ermöglicht.
 
 ## Ergebnisse
 
 Die Evaluierung zeigt:
 - Niedrigere Temperaturen (0.2-0.4) führen zu besseren Erfolgsraten
-- Häufigste Fehler sind argument_count_error und type_error
 - Die Codequalität nimmt mit steigender Temperatur ab
+- Direkte LeetCode-Ergebnisse bieten präzisere Leistungsmessungen
 
 ## Lizenz
 

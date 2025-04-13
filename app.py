@@ -11,8 +11,7 @@ import re
 from main import process_difficulty, save_results
 from api.leetcode import fetch_problems, fetch_full_problem
 from gpt.gpt import get_solution
-from sandbox.executor import test_solution
-from utils.clean import clean_html, extract_code_block, parse_testcases
+from utils.clean import clean_html, extract_code_block
 # Import der neuen Heatmap-Visualisierung
 from heatmap_viz import add_heatmap_tab
 # Import der neuen LeetCode-Submission-Komponenten
@@ -29,10 +28,12 @@ if 'results' not in st.session_state:
     st.session_state.results = {"easy": [], "medium": [], "hard": []}
 if 'current_problem' not in st.session_state:
     st.session_state.current_problem = None
+if 'active_problems' not in st.session_state:
+    st.session_state.active_problems = {}  # Dictionary von Problem-Slugs zu Problem-Details
 if 'current_solution' not in st.session_state:
     st.session_state.current_solution = None
-if 'current_results' not in st.session_state:
-    st.session_state.current_results = None
+if 'solutions' not in st.session_state:
+    st.session_state.solutions = {}  # Dictionary von Problem-Slugs zu Lösungen
 if 'terminal_output' not in st.session_state:
     st.session_state.terminal_output = []
 if 'search_results' not in st.session_state:
@@ -113,56 +114,94 @@ def clean_template(template_text):
     
     return cleaned_template
 
-# Erweiterte Fehlerprotokollierung hinzufügen
-def log_detailed_error(error_info, test_input, code_snippet=None):
-    """Detaillierte Fehlerprotokolle mit zusätzlichem Kontext erstellen"""
-    error_message = error_info.get('error', 'Unbekannter Fehler')
-    error_type = error_info.get('error_type', 'unknown_error')
+# Hilfsfunktion zum Anzeigen detaillierter Ergebnisinformationen
+def show_result_details(result, submission_num=None, is_nested=False):
+    """Hilfsfunktion zum Anzeigen detaillierter Ergebnisinformationen."""
+    # Zeitstempel
+    submission_header = f"Submission {submission_num}" if submission_num else "Submission"
+    st.markdown(f"**{submission_header}:** {result.get('timestamp', 'Unbekannt')}")
     
-    # Grundlegende Fehlerinformationen
-    log_to_terminal(f"Fehlertyp: {error_type}", "error")
+    # Modell-Informationen
+    st.markdown(f"**Modell:** {result.get('model', 'Unbekannt')} (Temperatur: {result.get('temperature', 'Unbekannt')})")
     
-    # Detaillierte Fehlerinformationen, je nach Fehlertyp
-    if 'split token' in error_message.lower():
-        # Suche nach dem spezifischen Token, das gesplittet wurde
-        import re
-        split_token_match = re.search(r"Detected split token: '([^']+)'", error_message)
-        expected_token_match = re.search(r"expected: '([^']+)'", error_message)
+    # Status und Ergebnis
+    status = "Erfolgreich" if result.get('success', False) else "Fehlgeschlagen"
+    status_color = "green" if result.get('success', False) else "red"
+    
+    st.markdown(f"**Status:** <span style='color: {status_color};'>{status}</span>", unsafe_allow_html=True)
+    
+    if 'leetcode_status' in result:
+        st.markdown(f"**LeetCode-Status:** {result.get('leetcode_status', 'Unbekannt')}")
+    
+    # Leistungsmetriken, falls vorhanden
+    metrics_col1, metrics_col2 = st.columns(2)
+    
+    with metrics_col1:
+        if 'runtime_ms' in result and result['runtime_ms'] is not None:
+            st.markdown(f"**Laufzeit:** {result.get('runtime_ms', 'N/A')} ms")
+    
+    with metrics_col2:
+        if 'memory_mb' in result and result['memory_mb'] is not None:
+            st.markdown(f"**Speicherverbrauch:** {result.get('memory_mb', 'N/A')} MB")
+    
+    # Fehlertyp und Details (falls fehlgeschlagen)
+    if not result.get('success', False) and result.get('error_type'):
+        error_type = result.get('error_type', 'unknown_error')
+        st.markdown(f"**Fehlertyp:** {error_type.replace('_leetcode', '')}")
         
-        if split_token_match:
-            split_token = split_token_match.group(1)
-            expected = expected_token_match.group(1) if expected_token_match else "unbekannt"
-            log_to_terminal(f"Aufgespaltenes Token gefunden: '{split_token}' (erwartet: '{expected}')", "error")
-            log_to_terminal(f"Häufige Ursache: Versehentliches Einfügen von Semikolons in Schlüsselwörtern oder Konstanten", "warning")
-    
-    elif 'undefined reference' in error_message.lower():
-        # Bei undefined reference Fehlern versuchen, die fehlende Funktion zu identifizieren
-        import re
-        undef_match = re.search(r"undefined reference to [`']([^'`]+)'", error_message)
-        if undef_match:
-            missing_func = undef_match.group(1)
-            log_to_terminal(f"Nicht definierte Referenz: '{missing_func}'", "error")
-            log_to_terminal(f"Der Code verweist auf eine Funktion/Symbol, das nicht implementiert wurde", "warning")
-    
-    elif 'compilation failed' in error_message.lower():
-        # Extrahiere relevante Zeilen aus der Kompilierungsfehlermeldung
-        import re
-        error_lines = [line for line in error_message.split('\n') if 'error:' in line]
-        for i, line in enumerate(error_lines[:3]):  # Zeige die ersten 3 Fehler
-            log_to_terminal(f"Kompilierungsfehler {i+1}: {line.strip()}", "error")
+        # Bei Compiler-Fehlern, zeige die Fehlermeldung an
+        if 'compile_error_leetcode' in error_type:
+            st.markdown("##### Compiler-Fehler Details")
+            if 'full_compile_error' in result and result['full_compile_error']:
+                st.code(result['full_compile_error'], language="bash")
+            elif 'compile_error' in result and result['compile_error']:
+                st.code(result['compile_error'], language="bash")
+            else:
+                st.info("Keine detaillierten Compiler-Fehler verfügbar.")
         
-        if len(error_lines) > 3:
-            log_to_terminal(f"... und {len(error_lines) - 3} weitere Kompilierungsfehler", "warning")
-    
-    # Testfall-Informationen
-    log_to_terminal(f"Fehlgeschlagen mit Testfall: {test_input}", "warning")
-    
-    # Wenn Code-Snippet vorhanden, zeigen wir es an
-    if code_snippet:
-        log_to_terminal(f"Relevanter Code-Ausschnitt: {code_snippet[:150]}...", "info")
+        # Bei Runtime-Fehlern, zeige die Fehlermeldung an
+        if 'runtime_error_leetcode' in error_type:
+            st.markdown("##### Laufzeitfehler Details")
+            if 'runtime_error' in result and result['runtime_error']:
+                st.code(result['runtime_error'], language="bash")
+            else:
+                st.info("Keine detaillierten Laufzeitfehler verfügbar.")
         
-    # Mögliche Maßnahmen
-    log_to_terminal("Empfehlung: Prompt anpassen, um diesen Fehlertyp explizit zu adressieren", "info")
+        # Bei Wrong Answer, zeige erwartete und tatsächliche Ausgabe an
+        if 'wrong_answer_leetcode' in error_type:
+            st.markdown("##### Wrong Answer Details")
+            if 'wrong_answer_details' in result and result['wrong_answer_details']:
+                details = result['wrong_answer_details']
+                if 'last_testcase' in details and details['last_testcase']:
+                    st.markdown("**Letzter fehlgeschlagener Testfall:**")
+                    st.code(details['last_testcase'])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Erwartete Ausgabe:**")
+                    st.code(details.get('expected', 'Nicht verfügbar'))
+                
+                with col2:
+                    st.markdown("**Tatsächliche Ausgabe:**")
+                    st.code(details.get('actual', 'Nicht verfügbar'))
+            else:
+                st.info("Keine detaillierten Wrong Answer-Informationen verfügbar.")
+    
+    # Code-Lösung anzeigen
+    st.markdown("##### Code-Lösung")
+    if 'solution' in result and result['solution']:
+        st.code(result['solution'], language="cpp")
+    else:
+        st.info("Keine Code-Lösung verfügbar.")
+    
+    # Rohdaten für Debugging
+    if not is_nested:
+        # Nur im nicht-verschachtelten Kontext Expander verwenden
+        with st.expander("Rohdaten", expanded=False):
+            if 'raw_result' in result:
+                st.json(result['raw_result'])
+            else:
+                st.json({k: v for k, v in result.items() if k != 'solution' and not isinstance(v, (dict, list)) or k == 'error_type'})
 
 # Seitenleiste für Modellauswahl und Konfiguration
 with st.sidebar:
@@ -208,8 +247,13 @@ with st.sidebar:
     else:
         full_model_name = model
 
+# Speichere die Modellauswahl im Session State
+st.session_state.model = model
+st.session_state.model_version = model_version
+st.session_state.temperature = temperature
+
 # Tabs für verschiedene Funktionen
-tab1, tab2, tab3, tab4 = st.tabs(["Problem auswählen", "Prompt anpassen", "Ergebnisse", "Statistiken"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Problem auswählen", "Prompt anpassen", "Ergebnisse", "Problem-Logs", "Statistiken"])
 
 # Tab 1: Problem auswählen
 with tab1:
@@ -372,9 +416,18 @@ with tab1:
                                         "examples": examples
                                     }
                                     
+                                    # Füge das Problem auch zu den aktiven Problemen hinzu
+                                    problem_slug = selected_problem['titleSlug']
+                                    st.session_state.active_problems[problem_slug] = {
+                                        "title": selected_problem['title'],
+                                        "slug": problem_slug,
+                                        "difficulty": current_difficulty,
+                                        "question": question,
+                                        "examples": examples
+                                    }
+                                    
                                     # Lösung und Ergebnisse zurücksetzen
                                     st.session_state.current_solution = None
-                                    st.session_state.current_results = None
                                     
                                     log_to_terminal(f"[DEBUG] Problem '{selected_problem['title']}' erfolgreich in session_state gespeichert")
                                     log_to_terminal(f"Problem '{selected_problem['title']}' erfolgreich geladen.", "success")
@@ -462,9 +515,18 @@ with tab1:
                                     "examples": examples
                                 }
                                 
+                                # Füge das Problem auch zu den aktiven Problemen hinzu
+                                problem_slug = selected_problem['titleSlug']
+                                st.session_state.active_problems[problem_slug] = {
+                                    "title": selected_problem['title'],
+                                    "slug": problem_slug,
+                                    "difficulty": current_difficulty,
+                                    "question": question,
+                                    "examples": examples
+                                }
+                                
                                 # Lösung und Ergebnisse zurücksetzen
                                 st.session_state.current_solution = None
-                                st.session_state.current_results = None
                                 
                                 log_to_terminal(f"[DEBUG] Problem '{selected_problem['title']}' erfolgreich in session_state gespeichert")
                                 log_to_terminal(f"Problem '{selected_problem['title']}' erfolgreich geladen.", "success")
@@ -533,9 +595,18 @@ with tab1:
                                         "examples": examples
                                     }
                                     
+                                    # Füge das Problem auch zu den aktiven Problemen hinzu
+                                    problem_slug = selected_problem['titleSlug']
+                                    st.session_state.active_problems[problem_slug] = {
+                                        "title": selected_problem['title'],
+                                        "slug": problem_slug,
+                                        "difficulty": difficulty,
+                                        "question": question,
+                                        "examples": examples
+                                    }
+                                    
                                     # Lösung und Ergebnisse zurücksetzen
                                     st.session_state.current_solution = None
-                                    st.session_state.current_results = None
                                     
                                     log_to_terminal(f"[DEBUG] Problem '{selected_problem['title']}' erfolgreich in session_state gespeichert")
                                     log_to_terminal(f"Problem '{selected_problem['title']}' erfolgreich geladen.", "success")
@@ -620,49 +691,55 @@ with tab1:
                                 llm_response = get_solution(prompt, temperature=temperature, model=full_model_name)
                                 code = extract_code_block(llm_response)
                                 
-                                # Teste die Lösung
-                                log_to_terminal(f"[BATCH] Teste Lösung für {problem['title']}...")
-                                test_inputs = parse_testcases(examples, problem['titleSlug'])
-                                
-                                if test_inputs:
-                                    results = []
-                                    test_success = True
+                                # Lösungen im Batch-Prozess werden nicht automatisch zur Statistik hinzugefügt
+                                # Die Ergebnisse werden erst erfasst, wenn eine LeetCode-Submission erfolgt
+                                log_to_terminal(f"[BATCH] Lösung für '{problem['title']}' generiert.", "success")
+
+                                # Problem und Lösung speichern
+                                problem_slug = problem['titleSlug']
+                                st.session_state.active_problems[problem_slug] = {
+                                    "title": problem['title'],
+                                    "slug": problem_slug,
+                                    "difficulty": difficulty,
+                                    "question": question,
+                                    "examples": examples
+                                }
+
+                                # Lösung speichern
+                                st.session_state.solutions[problem_slug] = {
+                                    "code": code,
+                                    "full_response": llm_response
+                                }
+
+                                # Automatisch bei LeetCode einreichen
+                                try:
+                                    log_to_terminal(f"[BATCH] Reiche Lösung für '{problem['title']}' bei LeetCode ein...")
+                                    batch_status_container.info(f"Reiche Lösung für '{problem['title']}' bei LeetCode ein...")
                                     
-                                    for j, input_set in enumerate(test_inputs):
-                                        result = test_solution(code, input_set, problem['titleSlug'])
-                                        results.append({
-                                            "input": input_set,
-                                            "result": result
-                                        })
+                                    from utils.submission_ui import submit_to_leetcode  # Importiere die Funktion für LeetCode-Submits
+                                    
+                                    # Submission starten
+                                    submit_result = submit_to_leetcode(problem_slug, code, "cpp")
+                                    
+                                    if submit_result.get("success", False):
+                                        leetcode_status = submit_result.get("result", "Unknown")
+                                        is_accepted = (submit_result.get("status_code", 0) == 10)
                                         
-                                        if not result['success']:
-                                            test_success = False
-                                            error_type = result.get('error_type', "Unbekannter Fehler")
-                                            log_to_terminal(f"[BATCH] Test {j+1} für {problem['title']} fehlgeschlagen: {error_type}", "error")
-                                    
-                                    # Ergebnis speichern
-                                    result_entry = {
-                                        "slug": problem['titleSlug'],
-                                        "title": problem['title'],
-                                        "success": test_success,
-                                        "error_type": None if test_success else error_type,
-                                        "solution": code,
-                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        "model": full_model_name,
-                                        "temperature": temperature
-                                    }
-                                    
-                                    st.session_state.results[difficulty].append(result_entry)
-                                    
-                                    if test_success:
-                                        log_to_terminal(f"[BATCH] Lösung für '{problem['title']}' erfolgreich!", "success")
-                                        success_count += 1
+                                        if is_accepted:
+                                            log_to_terminal(f"[BATCH] Lösung für '{problem['title']}' wurde von LeetCode akzeptiert!", "success")
+                                            batch_status_container.success(f"Lösung für '{problem['title']}' wurde von LeetCode akzeptiert!")
+                                        else:
+                                            log_to_terminal(f"[BATCH] LeetCode-Submit für '{problem['title']}' ergab: {leetcode_status}", "warning")
+                                            batch_status_container.warning(f"LeetCode-Submit für '{problem['title']}' ergab: {leetcode_status}")
                                     else:
-                                        log_to_terminal(f"[BATCH] Lösung für '{problem['title']}' fehlgeschlagen.", "error")
-                                        failure_count += 1
-                                else:
-                                    log_to_terminal(f"[BATCH] Keine gültigen Testfälle für {problem['title']} gefunden.", "warning")
-                                    failure_count += 1
+                                        error_msg = submit_result.get("error", "Unbekannter Fehler")
+                                        log_to_terminal(f"[BATCH] Fehler beim Submit für '{problem['title']}': {error_msg}", "error")
+                                        batch_status_container.error(f"Fehler beim Submit für '{problem['title']}': {error_msg}")
+                                except Exception as e:
+                                    log_to_terminal(f"[BATCH] Fehler beim LeetCode-Submit für '{problem['title']}': {str(e)}", "error")
+                                    batch_status_container.warning(f"Fehler beim LeetCode-Submit: {str(e)}")
+
+                                success_count += 1
                             
                             except Exception as e:
                                 log_to_terminal(f"[BATCH] Fehler bei der Verarbeitung von {problem['title']}: {str(e)}", "error")
@@ -688,6 +765,29 @@ with tab1:
     # Problem anzeigen, wenn vorhanden
     if st.session_state.current_problem:
         st.markdown("---")
+        
+        # Wenn es aktive Probleme gibt, zeige einen Dropdown zum Wechseln
+        if st.session_state.active_problems:
+            st.subheader("Aktive Probleme")
+            problem_options = [(slug, details["title"]) for slug, details in st.session_state.active_problems.items()]
+            selected_option = st.selectbox(
+                "Wähle ein Problem aus",
+                options=[slug for slug, _ in problem_options],
+                format_func=lambda x: next((title for slug, title in problem_options if slug == x), x),
+                index=next((i for i, (slug, _) in enumerate(problem_options) 
+                          if slug == st.session_state.current_problem["slug"]), 0)
+            )
+            
+            # Wenn ein anderes Problem ausgewählt wurde, ändere das current_problem
+            if selected_option != st.session_state.current_problem["slug"]:
+                st.session_state.current_problem = st.session_state.active_problems[selected_option]
+                # Setze auch die aktuelle Lösung, falls verfügbar
+                if selected_option in st.session_state.solutions:
+                    st.session_state.current_solution = st.session_state.solutions[selected_option]
+                else:
+                    st.session_state.current_solution = None
+                st.rerun()
+        
         # Erstelle eine "Karte" für das aktuelle Problem
         problem_container = st.container()
         with problem_container:
@@ -769,65 +869,21 @@ with tab1:
                             "full_response": llm_response
                         }
                         
+                        # Auch in das solutions Dictionary speichern
+                        slug = st.session_state.current_problem['slug']
+                        st.session_state.solutions[slug] = {
+                            "code": code,
+                            "full_response": llm_response
+                        }
+                        
                         log_to_terminal(f"Lösung von {full_model_name} erhalten.", "success")
                         status_container.success("Lösung generiert!")
                         
-                        # Automatisch die Lösung testen
-                        examples = st.session_state.current_problem['examples']
-                        slug = st.session_state.current_problem['slug']
+                        # Löschen des Status-Containers nach erfolgreicher Ausführung
+                        status_container.empty()
                         
-                        log_to_terminal("Teste generierte Lösung...")
-                        status_container.info("Teste Lösung...")
-                        
-                        test_inputs = parse_testcases(examples, slug)
-                        
-                        if test_inputs:
-                            log_to_terminal(f"{len(test_inputs)} Testfälle gefunden.")
-                            results = []
-                            for j, input_set in enumerate(test_inputs):
-                                log_to_terminal(f"Teste Eingabe {j+1}: {input_set}")
-                                result = test_solution(code, input_set, slug)
-                                results.append({
-                                    "input": input_set,
-                                    "result": result
-                                })
-                                
-                                if result['success']:
-                                    log_to_terminal(f"Test {j+1} erfolgreich.", "success")
-                                else:
-                                    error_type = result.get('error_type', "Unbekannter Fehler")
-                                    log_to_terminal(f"Test {j+1} fehlgeschlagen: {error_type}", "error")
-                                    # Füge hier die detaillierte Fehlerprotokollierung hinzu
-                                    log_detailed_error(result, input_set, code[:500] if len(code) > 500 else code)
-                            
-                            # Ergebnisse speichern
-                            st.session_state.current_results = results
-                            
-                            # Ergebnis zur Gesamtstatistik hinzufügen
-                            success = all(r["result"]["success"] for r in results)
-                            
-                            result_entry = {
-                                "slug": slug,
-                                "title": st.session_state.current_problem['title'],
-                                "success": success,
-                                "error_type": None if success else error_type,
-                                "solution": code,
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "model": full_model_name,
-                                "temperature": temperature
-                            }
-                            
-                            log_to_terminal(f"Gesamtergebnis für '{st.session_state.current_problem['title']}': {'Erfolg' if success else 'Fehlgeschlagen'}", "success" if success else "error")
-                            st.session_state.results[difficulty].append(result_entry)
-                            
-                            # Löschen des Status-Containers nach erfolgreicher Ausführung
-                            status_container.empty()
-                            
-                            # Seite neu laden, um die Ergebnisse anzuzeigen
-                            st.rerun()
-                        else:
-                            log_to_terminal("Keine gültigen Testfälle gefunden.", "warning")
-                            status_container.error("Keine gültigen Testfälle gefunden")
+                        # Seite neu laden, um die Ergebnisse anzuzeigen
+                        st.rerun()
                     
                     except Exception as e:
                         log_to_terminal(f"Fehler bei der LLM-Anfrage: {str(e)}", "error")
@@ -838,63 +894,17 @@ with tab1:
             st.markdown("---")
             solution_container = st.container()
             with solution_container:
-                # Lösung in drei Tabs anzeigen: "Lösung", "Testergebnisse" und "LeetCode Submission"
-                solution_tab, results_tab, submission_tab = st.tabs(["Generierte Lösung", "Testergebnisse", "LeetCode Submission"])
+                # Lösung in zwei Tabs anzeigen: "Lösung" und "LeetCode Submission"
+                solution_tab, submission_tab = st.tabs(["Generierte Lösung", "LeetCode Submission"])
                 
                 with solution_tab:
-                    st.code(st.session_state.current_solution["code"], language="cpp")
-                
-                with results_tab:
-                    if st.session_state.current_results:
-                        # Gesamtergebnis am Anfang
-                        success = all(r["result"]["success"] for r in st.session_state.current_results)
-                        if success:
-                            st.success("✅ Alle Tests erfolgreich!")
-                        else:
-                            st.error("❌ Einige Tests sind fehlgeschlagen")
-                        
-                        # Individuelle Testergebnisse
-                        for i, result in enumerate(st.session_state.current_results):
-                            with st.expander(f"Test {i+1}: {'✅ Erfolgreich' if result['result']['success'] else '❌ Fehlgeschlagen'}", expanded=not result["result"]["success"]):
-                                st.write(f"**Eingabe:** `{result['input']}`")
-                                
-                                if result["result"]["success"]:
-                                    st.write(f"**Ausgabe:** `{result['result'].get('output')}`")
-                                else:
-                                    # Zeige benutzerfreundliche Fehlermeldung an, falls verfügbar
-                                    if "friendly_error" in result["result"]:
-                                        st.warning(f"**Fehleranalyse:** {result['result']['friendly_error']}")
-                                    
-                                    # Zeige den detaillierten Fehlertyp an
-                                    st.write(f"**Fehlertyp:** {result['result'].get('error_type', 'Unbekannter Fehler')}")
-                                    
-                                    # Zeige die Fehlermeldung an
-                                    st.code(f"Fehlermeldung: {result['result'].get('error', 'Keine Fehlermeldung verfügbar')}")
-                    else:
-                        st.info("Keine Testergebnisse verfügbar.")
+                    # Get language from session state or default to cpp
+                    display_language = st.session_state.get('submission_language', 'cpp')
+                    st.code(st.session_state.current_solution["code"], language=display_language)
                 
                 with submission_tab:
-                    # LeetCode-Submission UI anzeigen
-                    if st.session_state.current_problem and st.session_state.current_solution:
-                        # Banner entfernen
-                        show_submission_section(
-                            problem_slug=st.session_state.current_problem['slug'],
-                            code=st.session_state.current_solution['code']
-                        )
-                    else:
-                        # Ansprechendere Nachricht mit Icon
-                        st.markdown("""
-                        <div style="text-align: center; padding: 2.5rem 1.5rem; background-color: #f7f9fc; border-radius: 4px; margin: 1.5rem 0; border: 1px solid #e0e6ed;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6c757d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
-                                <polyline points="14 2 14 8 20 8"></polyline>
-                                <line x1="12" y1="18" x2="12" y2="12"></line>
-                                <line x1="9" y1="15" x2="15" y2="15"></line>
-                            </svg>
-                            <h3 style="color: #3d5a80; font-weight: 400; margin: 1rem 0 0.5rem 0; font-size: 1rem;">Generate a solution first</h3>
-                            <p style="color: #6c757d; font-size: 0.9rem; max-width: 400px; margin: 0 auto;">Create a solution in the "Generate Solution" section before submitting to LeetCode.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    # Use submission language from session state
+                    show_submission_section(st.session_state.current_problem['slug'], st.session_state.current_solution["code"])
 
 # Tab 2: Prompt anpassen
 with tab2:
@@ -1202,15 +1212,10 @@ with tab3:
                 if filter_search and filter_search.lower() not in result["title"].lower():
                     continue
                 
-                # Bestimme die Art der Einreichung
-                submission_type = result.get("submission_type", "local_test")
-                submission_type_label = "🌐 LeetCode" if submission_type == "leetcode_api" else "🖥️ Lokal"
-                
                 # Erweiterte Fehlerinformationen für LeetCode-Submissions
                 error_info = result.get("error_type", "None") if not result["success"] else "None"
-                if submission_type == "leetcode_api" and not result["success"]:
-                    leetcode_status = result.get("leetcode_status", "Unknown")
-                    error_info = f"{leetcode_status} (LeetCode)"
+                if not result["success"] and result.get("leetcode_status"):
+                    error_info = f"{result.get('leetcode_status')} (LeetCode)"
                     
                 # Füge zum Ergebnis hinzu
                 all_results.append({
@@ -1218,7 +1223,6 @@ with tab3:
                     "Title": result["title"],
                     "Slug": result["slug"],
                     "Success": "✅" if result["success"] else "❌",
-                    "Type": submission_type_label,
                     "Error Type": error_info,
                     "Model": result.get("model", "Unknown"),
                     "Temp": result.get("temperature", "0.7"),
@@ -1231,28 +1235,28 @@ with tab3:
         if len(df) > 0:
             st.dataframe(df, use_container_width=True, height=400)
             st.info(f"{len(df)} Ergebnisse gefunden.")
+            
+            # Export-Funktionen
+            st.markdown("---")
+            export_container = st.container()
+            with export_container:
+                st.subheader("Ergebnisse exportieren")
+                export_col1, export_col2 = st.columns([1, 3])
+                with export_col1:
+                    if st.button("Ergebnisse exportieren", use_container_width=True):
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"leetcode_ui_results_{timestamp}"
+                        
+                        # JSON-Export
+                        with open(f"{filename}.json", "w") as f:
+                            json.dump(st.session_state.results, f, indent=2)
+                        
+                        # CSV-Export
+                        df.to_csv(f"{filename}.csv", index=False)
+                        
+                        st.success(f"Ergebnisse gespeichert als {filename}.json und {filename}.csv")
         else:
             st.warning("Keine Ergebnisse für die gewählten Filter gefunden.")
-        
-        # Export-Funktionen
-        st.markdown("---")
-        export_container = st.container()
-        with export_container:
-            st.subheader("Ergebnisse exportieren")
-            export_col1, export_col2 = st.columns([1, 3])
-            with export_col1:
-                if st.button("Ergebnisse exportieren", use_container_width=True):
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"leetcode_ui_results_{timestamp}"
-                    
-                    # JSON-Export
-                    with open(f"{filename}.json", "w") as f:
-                        json.dump(st.session_state.results, f, indent=2)
-                    
-                    # CSV-Export
-                    df.to_csv(f"{filename}.csv", index=False)
-                    
-                    st.success(f"Ergebnisse gespeichert als {filename}.json und {filename}.csv")
     else:
         st.info("Noch keine Ergebnisse verfügbar. Generiere eine Lösung im Tab 'Problem auswählen'.")
         
@@ -1260,20 +1264,123 @@ with tab3:
         st.markdown("### Beispiel-Ansicht")
         placeholder_data = pd.DataFrame([
             {"Difficulty": "easy", "Title": "Two Sum", "Success": "✅", "Error Type": "None", "Timestamp": "2023-05-01 12:34:56"},
-            {"Difficulty": "medium", "Title": "Add Two Numbers", "Success": "❌", "Error Type": "syntax_error", "Timestamp": "2023-05-01 12:45:12"}
+            {"Difficulty": "medium", "Title": "Add Two Numbers", "Success": "❌", "Error Type": "wrong_answer_leetcode", "Timestamp": "2023-05-01 12:45:12"}
         ])
         st.dataframe(placeholder_data, use_container_width=True)
         st.caption("So werden deine Ergebnisse angezeigt, sobald du einige Probleme gelöst hast.")
 
-# Tab 4: Statistiken
+# Tab 4: Problem-Logs
 with tab4:
-    st.header("Statistiken")
+    st.header("Problem-Logs")
     
     if any(len(results) > 0 for results in st.session_state.results.values()):
-        # Tabs für verschiedene Statistikansichten
-        stat_tab1, stat_tab2, stat_tab3, stat_tab4, stat_tab5 = st.tabs(["Allgemeine Statistik", "Modell-Vergleich", "Fehleranalyse nach Modell", "Lokal vs. LeetCode", "Heatmap"])
+        # Sammle alle Probleme über alle Schwierigkeitsgrade
+        all_problems = {}
         
-        # Tab 1: Allgemeine Statistik (bisherige Funktionalität)
+        for difficulty, results in st.session_state.results.items():
+            for result in results:
+                slug = result.get('slug', 'unknown')
+                if slug not in all_problems:
+                    all_problems[slug] = {
+                        'title': result.get('title', 'Unbekanntes Problem'),
+                        'difficulty': difficulty,
+                        'results': []
+                    }
+                all_problems[slug]['results'].append(result)
+        
+        # Zeige Filteroptionen
+        filter_cols = st.columns(3)
+        with filter_cols[0]:
+            filter_difficulty = st.selectbox(
+                "Nach Schwierigkeitsgrad filtern", 
+                ["Alle", "easy", "medium", "hard"],
+                key="problem_logs_filter_difficulty"
+            )
+        
+        with filter_cols[1]:
+            filter_status = st.selectbox(
+                "Nach Status filtern", 
+                ["Alle", "Erfolgreich", "Fehlgeschlagen"],
+                key="problem_logs_filter_status"
+            )
+        
+        with filter_cols[2]:
+            filter_search = st.text_input(
+                "Suche (Titel oder Slug)", 
+                key="problem_logs_filter_search"
+            )
+        
+        st.markdown("---")
+        
+        # Gruppiere nach Schwierigkeitsgrad für die Anzeige
+        problems_by_difficulty = {
+            'easy': [],
+            'medium': [],
+            'hard': [],
+            'unknown': []
+        }
+        
+        for slug, problem_data in all_problems.items():
+            difficulty = problem_data['difficulty']
+            if difficulty in problems_by_difficulty:
+                problems_by_difficulty[difficulty].append((slug, problem_data))
+        
+        # Filtere nach Schwierigkeitsgrad
+        difficulties_to_show = ['easy', 'medium', 'hard', 'unknown'] if filter_difficulty == "Alle" else [filter_difficulty]
+        
+        for difficulty in difficulties_to_show:
+            if not problems_by_difficulty[difficulty]:
+                continue
+                
+            st.subheader(f"{difficulty.capitalize()} Probleme")
+            
+            for slug, problem_data in sorted(problems_by_difficulty[difficulty], key=lambda x: x[1]['title']):
+                # Filtere nach Suchbegriff
+                title = problem_data['title']
+                if filter_search and filter_search.lower() not in title.lower() and filter_search.lower() not in slug.lower():
+                    continue
+                
+                # Filtere nach Status
+                results = problem_data['results']
+                latest_result = results[-1]  # Neuestes Ergebnis
+                
+                if filter_status == "Erfolgreich" and not latest_result['success']:
+                    continue
+                if filter_status == "Fehlgeschlagen" and latest_result['success']:
+                    continue
+                
+                # Bestimme Farbe basierend auf Status
+                status_color = "green" if latest_result['success'] else "red"
+                status_icon = "✅" if latest_result['success'] else "❌"
+                
+                # Erstelle Expander für das Problem
+                with st.expander(f"{status_icon} **{title}** ({slug})"):
+                    # Zeige grundlegende Probleminfos
+                    st.markdown(f"**Schwierigkeitsgrad:** {difficulty.capitalize()}")
+                    st.markdown(f"**LeetCode-Link:** [Problem öffnen](https://leetcode.com/problems/{slug}/)")
+                    
+                    # Zeige alle Submissions in Tabs
+                    if len(results) > 1:
+                        st.markdown(f"**{len(results)} Submissions:**")
+                        submission_tabs = st.tabs([f"Submission {i+1}" for i in range(len(results))])
+                        
+                        for i, (tab, result) in enumerate(zip(submission_tabs, results)):
+                            with tab:
+                                show_result_details(result, i + 1, is_nested=True)
+                    else:
+                        show_result_details(results[0], is_nested=True)
+    else:
+        st.info("Noch keine Ergebnisse verfügbar. Generiere eine Lösung im Tab 'Problem auswählen'.")
+
+# Tab 5: Statistiken
+with tab5:
+    st.header("Statistiken")
+    
+    if any(len(results) > 0 for results in st.session_state.results.items()):
+        # Tabs für verschiedene Statistikansichten - entferne "Lokal vs. LeetCode"
+        stat_tab1, stat_tab2, stat_tab3, stat_tab4 = st.tabs(["Allgemeine Statistik", "Modell-Vergleich", "Fehleranalyse nach Modell", "Heatmap"])
+        
+        # Tab 1: Allgemeine Statistik
         with stat_tab1:
             # Übersicht-Container
             overview_container = st.container()
@@ -1324,12 +1431,18 @@ with tab4:
             
             # Statistik-Tabelle
             stats_df = pd.DataFrame(stats_data)
-            st.dataframe(stats_df[["Difficulty", "Total", "Success", "Success Rate"]], use_container_width=True)
+            if not stats_df.empty and all(col in stats_df.columns for col in ["Difficulty", "Total", "Success", "Success Rate"]):
+                st.dataframe(stats_df[["Difficulty", "Total", "Success", "Success Rate"]], use_container_width=True)
+            else:
+                # Fallback für den Fall, dass die Daten nicht die erwarteten Spalten haben
+                st.dataframe(stats_df, use_container_width=True)
             
             # Visualisierung der Erfolgsrate nach Schwierigkeitsgrad
             st.subheader("Visualisierung nach Schwierigkeitsgrad")
-            if len(stats_df) > 0:
+            if len(stats_df) > 0 and "Success Rate (raw)" in stats_df.columns and "Difficulty" in stats_df.columns:
                 st.bar_chart(stats_df.set_index("Difficulty")["Success Rate (raw)"], height=300)
+            else:
+                st.info("Nicht genügend Daten für eine Visualisierung der Erfolgsraten.")
             
             # Horizontale Linie
             st.markdown("---")
@@ -1338,50 +1451,28 @@ with tab4:
             st.subheader("Häufigste Fehlertypen")
             
             error_types = {}
-            leetcode_errors = {}
             
             for difficulty, results in st.session_state.results.items():
                 for result in results:
                     if not result["success"] and result.get("error_type"):
                         error_type = result.get("error_type")
-                        
-                        # Unterscheide zwischen lokalen Tests und LeetCode-Submissions
-                        if "leetcode" in error_type.lower():
-                            if error_type not in leetcode_errors:
-                                leetcode_errors[error_type] = 0
-                            leetcode_errors[error_type] += 1
-                        else:
-                            if error_type not in error_types:
-                                error_types[error_type] = 0
-                            error_types[error_type] += 1
+                        if error_type not in error_types:
+                            error_types[error_type] = 0
+                        error_types[error_type] += 1
             
-            # Zeige sowohl lokale als auch LeetCode-Fehler an
-            if error_types or leetcode_errors:
-                # Lokale Testfehler
-                if error_types:
-                    st.markdown("##### Fehler bei lokalen Tests")
-                    error_df = pd.DataFrame([
-                        {"Error Type": error_type, "Count": count}
-                        for error_type, count in error_types.items()
-                    ])
-                    error_df = error_df.sort_values("Count", ascending=False)
-                    
-                    # Balkendiagramm für Fehlertypen
+            # Zeige Fehler an
+            if error_types:
+                st.markdown("##### Fehler bei LeetCode-Submissions")
+                error_df = pd.DataFrame([
+                    {"Error Type": error_type.replace("_leetcode", ""), "Count": count}
+                    for error_type, count in error_types.items()
+                ])
+                error_df = error_df.sort_values("Count", ascending=False)
+                
+                # Balkendiagramm für Fehlertypen
+                if not error_df.empty and "Error Type" in error_df.columns:
                     st.bar_chart(error_df.set_index("Error Type"), height=250)
                     st.dataframe(error_df, use_container_width=True)
-                
-                # LeetCode-Fehler
-                if leetcode_errors:
-                    st.markdown("##### Fehler bei LeetCode-Submissions")
-                    leetcode_error_df = pd.DataFrame([
-                        {"Error Type": error_type.replace("_leetcode", ""), "Count": count}
-                        for error_type, count in leetcode_errors.items()
-                    ])
-                    leetcode_error_df = leetcode_error_df.sort_values("Count", ascending=False)
-                    
-                    # Balkendiagramm für LeetCode-Fehlertypen
-                    st.bar_chart(leetcode_error_df.set_index("Error Type"), height=250)
-                    st.dataframe(leetcode_error_df, use_container_width=True)
                 
                 # Empfehlungen basierend auf häufigsten Fehlern
                 st.subheader("Empfehlungen")
@@ -1396,35 +1487,181 @@ with tab4:
                         top_error_count = count
                 
                 if top_error:
-                    if "syntax" in top_error.lower():
-                        st.info("💡 **Tipp für lokale Tests**: Die häufigsten Fehler sind Syntaxfehler. Achte besonders auf korrekte Semikolons und Klammerung in deinem Prompt-Template.")
-                    elif "undefined" in top_error.lower():
-                        st.info("💡 **Tipp für lokale Tests**: Viele Fehler beziehen sich auf undefinierte Referenzen. Verbessere dein Prompt-Template, um sicherzustellen, dass alle Funktionen vollständig implementiert werden.")
+                    if "wrong_answer" in top_error.lower():
+                        st.info("💡 **Tipp**: Die häufigsten Fehler sind falsche Antworten. Achte darauf, dass deine Lösungen alle Randfälle (edge cases) behandeln.")
+                    elif "performance" in top_error.lower():
+                        st.info("💡 **Tipp**: Optimiere die Laufzeit und den Speicherverbrauch deiner Lösungen.")
                     elif "compile" in top_error.lower():
-                        st.info("💡 **Tipp für lokale Tests**: Compilerfehler treten häufig auf. Achte darauf, dass dein Prompt die Einbindung aller benötigten Header-Dateien anweist.")
+                        st.info("💡 **Tipp**: Überprüfe die Syntax und Bibliotheksimports für deine Submissions. Stelle sicher, dass für C++-Submissions ein 'main()' vorhanden ist, besonders für SQL-Probleme.")
+                    elif "runtime" in top_error.lower():
+                        st.info("💡 **Tipp**: Deine Lösungen haben Laufzeitfehler. Achte auf Speicherzugriffsfehler, Division durch Null oder ähnliche Probleme.")
                     else:
-                        st.info(f"💡 **Tipp für lokale Tests**: Analysiere die häufigsten Fehler vom Typ '{top_error}' und passe dein Prompt-Template entsprechend an.")
+                        st.info(f"💡 **Tipp**: Analysiere die häufigsten Fehler vom Typ '{top_error.replace('_leetcode', '')}' und passe deine Lösungen entsprechend an.")
+                else:
+                    st.info("Fehlertypen können nicht visualisiert werden.")
+
+                # Detaillierte Fehleranalyse für häufige Fehler
+                st.subheader("Detaillierte Fehleranalyse")
                 
-                # Empfehlungen für LeetCode-Fehler
-                top_leetcode_error = None
-                top_leetcode_count = 0
+                # Sammeln der Fehlermeldungen für jeden Fehlertyp
+                error_messages = {}
+                problem_types_with_errors = {}
                 
-                for error_type, count in leetcode_errors.items():
-                    if count > top_leetcode_count:
-                        top_leetcode_error = error_type
-                        top_leetcode_count = count
+                for difficulty, results in st.session_state.results.items():
+                    for result in results:
+                        if not result.get("success", True) and result.get("error_type"):
+                            error_type = result.get("error_type")
+                            
+                            # Sammle Fehlermeldungen
+                            if error_type not in error_messages:
+                                error_messages[error_type] = []
+                            
+                            error_msg = result.get("error_message", "")
+                            if error_msg and error_msg not in error_messages[error_type]:
+                                error_messages[error_type].append(error_msg)
+                            
+                            # Problematische Problem-Typen identifizieren
+                            problem_title = result.get("title", "")
+                            problem_slug = result.get("slug", "")
+                            
+                            # Kategorisiere Problem-Typen (Database, Array, String, etc.)
+                            problem_type = "Other"
+                            if "sql" in problem_slug.lower() or "database" in problem_slug.lower() or any(db_term in problem_slug.lower() for db_term in ["query", "select", "join", "order", "employee", "customer", "table"]):
+                                problem_type = "Database"
+                            elif any(arr_term in problem_slug.lower() for arr_term in ["array", "list", "subarray", "matrix"]):
+                                problem_type = "Array"
+                            elif any(str_term in problem_slug.lower() for str_term in ["string", "word", "substring", "anagram", "palindrome"]):
+                                problem_type = "String"
+                            elif any(tree_term in problem_slug.lower() for tree_term in ["tree", "binary", "node", "bst"]):
+                                problem_type = "Tree"
+                            
+                            if problem_type not in problem_types_with_errors:
+                                problem_types_with_errors[problem_type] = {"count": 0, "problems": []}
+                            
+                            problem_types_with_errors[problem_type]["count"] += 1
+                            if problem_title and problem_title not in [p["title"] for p in problem_types_with_errors[problem_type]["problems"]]:
+                                problem_types_with_errors[problem_type]["problems"].append({
+                                    "title": problem_title,
+                                    "slug": problem_slug,
+                                    "error_type": error_type
+                                })
                 
-                if top_leetcode_error:
-                    clean_error = top_leetcode_error.replace("_leetcode", "")
-                    if "wrong_answer" in top_leetcode_error:
-                        st.info("💡 **Tipp für LeetCode-Submissions**: Die häufigsten Fehler sind falsche Antworten. Achte darauf, dass deine Lösungen alle Randfälle (edge cases) behandeln.")
-                    elif "performance" in top_leetcode_error:
-                        st.info("💡 **Tipp für LeetCode-Submissions**: Optimiere die Laufzeit und den Speicherverbrauch deiner Lösungen.")
-                    elif "compile" in top_leetcode_error:
-                        st.info("💡 **Tipp für LeetCode-Submissions**: Überprüfe die Syntax und Bibliotheksimports für LeetCode-Submissions.")
-                    else:
-                        st.info(f"💡 **Tipp für LeetCode-Submissions**: Analysiere die häufigsten Fehler vom Typ '{clean_error}' und passe deine Lösungen entsprechend an.")
-            else:
+                # Zeige häufige Fehlermeldungen
+                for error_type, messages in error_messages.items():
+                    with st.expander(f"Häufige Fehlermeldungen für '{error_type.replace('_leetcode', '')}'"):
+                        for msg in messages:
+                            if "undefined symbol: main" in msg:
+                                st.error(f"{msg}\n\n**Hinweis**: Dies tritt auf, wenn der Code keine 'main()'-Funktion enthält. Besonders für SQL-Probleme bei Verwendung von C++ als Sprache.")
+                            else:
+                                st.error(msg)
+                
+                # Problematische Problem-Typen
+                if problem_types_with_errors:
+                    st.subheader("Probleme nach Kategorie")
+                    problem_type_data = []
+                    
+                    for ptype, data in problem_types_with_errors.items():
+                        problem_type_data.append({
+                            "Kategorie": ptype, 
+                            "Fehleranzahl": data["count"]
+                        })
+                    
+                    problem_type_df = pd.DataFrame(problem_type_data)
+                    if not problem_type_df.empty:
+                        st.bar_chart(problem_type_df.set_index("Kategorie"), height=250)
+                    
+                    # Detaillierte Liste der Probleme pro Kategorie
+                    for ptype, data in problem_types_with_errors.items():
+                        with st.expander(f"Probleme in Kategorie '{ptype}' ({data['count']} Fehler)"):
+                            for problem in data["problems"]:
+                                st.markdown(f"- **{problem['title']}** ({problem['slug']}) - Fehlertyp: {problem['error_type'].replace('_leetcode', '')}")
+                
+                # Spezielle Tipps für SQL/Database-Probleme wenn vorhanden
+                if "Database" in problem_types_with_errors:
+                    st.warning("""
+                    **Tipp für Database/SQL-Probleme:**
+                    
+                    Bei SQL-Problemen und C++ Submissions sollte der Code eine main()-Funktion enthalten:
+                    ```cpp
+                    #include <iostream>
+                    using namespace std;
+                    
+                    // SQL Query als Kommentar angeben
+                    // SELECT column FROM table WHERE condition;
+                    
+                    int main() {
+                        cout << "SQL Query ausgeführt" << endl;
+                        return 0;
+                    }
+                    ```
+                    Oder besser: Wähle SQL als Sprache für Database-Probleme statt C++.
+                    """)
+                    
+                    # Zeige eine Liste der SQL-Probleme mit Fehlern an
+                    st.subheader("SQL/Database Probleme mit Fehlern")
+                    
+                    sql_errors = []
+                    for difficulty, results in st.session_state.results.items():
+                        for result in results:
+                            if (not result.get("success", True) and 
+                                result.get("is_sql_problem", False)):
+                                sql_errors.append(result)
+                    
+                    if sql_errors:
+                        # Erstelle eine Tabelle mit SQL-Problemen und ihren Fehlern
+                        sql_error_data = []
+                        for error in sql_errors:
+                            sql_error_data.append({
+                                "Problem": error.get("title", "Unbekannt"),
+                                "Slug": error.get("slug", "unknown"),
+                                "Fehlertyp": error.get("error_type", "unknown").replace("_leetcode", ""),
+                                "Fehlermeldung": error.get("error_message", "Keine Meldung verfügbar")
+                            })
+                        
+                        # Zeige die Tabelle an
+                        sql_error_df = pd.DataFrame(sql_error_data)
+                        st.dataframe(sql_error_df, use_container_width=True)
+                        
+                        # Vorschlag für korrekte SQL-Lösung
+                        with st.expander("Beispiel für korrekte SQL-Lösung in C++"):
+                            st.code("""
+#include <iostream>
+using namespace std;
+
+// Beispiel: employees-earning-more-than-their-managers
+/*
+SELECT e1.name as Employee
+FROM Employee e1, Employee e2
+WHERE e1.managerId = e2.id AND e1.salary > e2.salary;
+*/
+
+int main() {
+    cout << "SQL-Query wird ausgeführt..." << endl;
+    return 0;
+}
+                            """, language="cpp")
+                        
+                        # Vorschlag für direkte SQL-Lösung
+                        with st.expander("Direkte SQL-Lösung (empfohlen)"):
+                            st.markdown("""
+Um SQL-Probleme zu lösen, ist es am besten, SQL als Sprache zu wählen statt C++.
+Das würde bedeuten, dass du einfach nur die SQL-Abfrage ohne C++-Boilerplate schreiben müsstest.
+
+**Beispiel für ein SQL-Problem:**
+
+```sql
+-- Beispiel: employees-earning-more-than-their-managers
+SELECT e1.name as Employee
+FROM Employee e1, Employee e2
+WHERE e1.managerId = e2.id AND e1.salary > e2.salary;
+```
+
+Um die Sprache zu ändern, müsstest du im Code des Tools:
+1. Die Sprache auf 'mysql' statt 'cpp' setzen
+2. Sicherstellen, dass SQL-Syntax korrekt formatiert ist
+                            """)
+
+            if not error_types:
                 st.info("Bisher keine Fehler gefunden. Prima!")
         
         # Tab 2: Modell-Vergleich
@@ -1493,10 +1730,16 @@ with tab4:
                 model_compare_df = pd.DataFrame(model_compare_data)
                 
                 # Tabelle mit Modellvergleich
-                st.dataframe(model_compare_df[[
+                if not model_compare_df.empty and all(col in model_compare_df.columns for col in [
                     "Model", "Total Problems", "Success Rate", 
                     "Easy Success Rate", "Medium Success Rate", "Hard Success Rate"
-                ]], use_container_width=True)
+                ]):
+                    st.dataframe(model_compare_df[[
+                        "Model", "Total Problems", "Success Rate", 
+                        "Easy Success Rate", "Medium Success Rate", "Hard Success Rate"
+                    ]], use_container_width=True)
+                else:
+                    st.dataframe(model_compare_df, use_container_width=True)
                 
                 # Visualisierung des Modellvergleichs
                 st.subheader("Erfolgsraten nach Modell")
@@ -1530,7 +1773,10 @@ with tab4:
                     
                     # Gruppiertes Balkendiagramm für Schwierigkeitsgrade je Modell
                     chart_data = model_difficulty_df.pivot(index="Model", columns="Difficulty", values="Success Rate")
-                    st.bar_chart(chart_data, height=400)
+                    if not chart_data.empty:
+                        st.bar_chart(chart_data, height=400)
+                    else:
+                        st.info("Nicht genügend Daten für eine Visualisierung nach Schwierigkeitsgrad.")
                     
                     # Top-Modell identifizieren
                     top_model = model_compare_df.loc[model_compare_df["Success Rate (raw)"].idxmax()]
@@ -1634,118 +1880,8 @@ with tab4:
                 for error_type, (model, rate) in best_models.items():
                     st.info(f"💡 Für Fehlertyp '{error_type}': **{model}** hat die niedrigste Fehlerrate ({rate})")
         
-        # Tab 4: Lokal vs. LeetCode
-        with stat_tab4:
-            st.subheader("Vergleich: Lokale Tests vs. LeetCode-Submissions")
-            
-            # Zähle lokale Tests und LeetCode-Submissions
-            local_tests = {"total": 0, "success": 0, "easy": 0, "medium": 0, "hard": 0, "easy_success": 0, "medium_success": 0, "hard_success": 0}
-            leetcode_submissions = {"total": 0, "success": 0, "easy": 0, "medium": 0, "hard": 0, "easy_success": 0, "medium_success": 0, "hard_success": 0}
-            
-            for difficulty, results in st.session_state.results.items():
-                for result in results:
-                    submission_type = result.get("submission_type", "local_test")
-                    is_success = result.get("success", False)
-                    
-                    if submission_type == "leetcode_api":
-                        leetcode_submissions["total"] += 1
-                        leetcode_submissions[difficulty] += 1
-                        if is_success:
-                            leetcode_submissions["success"] += 1
-                            leetcode_submissions[f"{difficulty}_success"] += 1
-                    else:
-                        local_tests["total"] += 1
-                        local_tests[difficulty] += 1
-                        if is_success:
-                            local_tests["success"] += 1
-                            local_tests[f"{difficulty}_success"] += 1
-            
-            # Berechne Erfolgsraten
-            local_success_rate = (local_tests["success"] / local_tests["total"] * 100) if local_tests["total"] > 0 else 0
-            leetcode_success_rate = (leetcode_submissions["success"] / leetcode_submissions["total"] * 100) if leetcode_submissions["total"] > 0 else 0
-            
-            # Anzeige der Gesamtzahlen
-            st.markdown("##### Gesamtübersicht")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Lokale Tests", local_tests["total"], f"{local_success_rate:.1f}% Erfolg")
-                
-                # Details zu lokalen Tests
-                if local_tests["total"] > 0:
-                    easy_rate = (local_tests["easy_success"] / local_tests["easy"] * 100) if local_tests["easy"] > 0 else 0
-                    medium_rate = (local_tests["medium_success"] / local_tests["medium"] * 100) if local_tests["medium"] > 0 else 0
-                    hard_rate = (local_tests["hard_success"] / local_tests["hard"] * 100) if local_tests["hard"] > 0 else 0
-                    
-                    st.markdown(f"""
-                    - **Erfolgreiche Tests:** {local_tests["success"]} ({local_success_rate:.1f}%)
-                    - **Easy:** {local_tests["easy_success"]}/{local_tests["easy"]} ({easy_rate:.1f}%)
-                    - **Medium:** {local_tests["medium_success"]}/{local_tests["medium"]} ({medium_rate:.1f}%)
-                    - **Hard:** {local_tests["hard_success"]}/{local_tests["hard"]} ({hard_rate:.1f}%)
-                    """)
-            
-            with col2:
-                st.metric("LeetCode-Submissions", leetcode_submissions["total"], f"{leetcode_success_rate:.1f}% Erfolg")
-                
-                # Details zu LeetCode-Submissions
-                if leetcode_submissions["total"] > 0:
-                    easy_rate = (leetcode_submissions["easy_success"] / leetcode_submissions["easy"] * 100) if leetcode_submissions["easy"] > 0 else 0
-                    medium_rate = (leetcode_submissions["medium_success"] / leetcode_submissions["medium"] * 100) if leetcode_submissions["medium"] > 0 else 0
-                    hard_rate = (leetcode_submissions["hard_success"] / leetcode_submissions["hard"] * 100) if leetcode_submissions["hard"] > 0 else 0
-                    
-                    st.markdown(f"""
-                    - **Erfolgreiche Submissions:** {leetcode_submissions["success"]} ({leetcode_success_rate:.1f}%)
-                    - **Easy:** {leetcode_submissions["easy_success"]}/{leetcode_submissions["easy"]} ({easy_rate:.1f}%)
-                    - **Medium:** {leetcode_submissions["medium_success"]}/{leetcode_submissions["medium"]} ({medium_rate:.1f}%)
-                    - **Hard:** {leetcode_submissions["hard_success"]}/{leetcode_submissions["hard"]} ({hard_rate:.1f}%)
-                    """)
-            
-            # Visualisierung des Vergleichs
-            if local_tests["total"] > 0 or leetcode_submissions["total"] > 0:
-                st.markdown("##### Erfolgsraten im Vergleich")
-                
-                compare_data = pd.DataFrame([
-                    {"Type": "Lokale Tests", "Success Rate": local_success_rate, "Total": local_tests["total"]},
-                    {"Type": "LeetCode", "Success Rate": leetcode_success_rate, "Total": leetcode_submissions["total"]}
-                ])
-                
-                st.bar_chart(compare_data.set_index("Type")["Success Rate"], height=300)
-                
-                # Vergleich nach Schwierigkeitsgrad
-                st.markdown("##### Erfolgsraten nach Schwierigkeitsgrad")
-                
-                difficulty_data = []
-                
-                for diff in ["easy", "medium", "hard"]:
-                    local_rate = (local_tests[f"{diff}_success"] / local_tests[diff] * 100) if local_tests[diff] > 0 else 0
-                    leetcode_rate = (leetcode_submissions[f"{diff}_success"] / leetcode_submissions[diff] * 100) if leetcode_submissions[diff] > 0 else 0
-                    
-                    difficulty_data.append({"Type": "Lokale Tests", "Difficulty": diff.capitalize(), "Success Rate": local_rate})
-                    difficulty_data.append({"Type": "LeetCode", "Difficulty": diff.capitalize(), "Success Rate": leetcode_rate})
-                
-                diff_df = pd.DataFrame(difficulty_data)
-                
-                # Gruppiertes Balkendiagramm für Schwierigkeitsgrade je Typ
-                chart_data = diff_df.pivot(index="Difficulty", columns="Type", values="Success Rate")
-                st.bar_chart(chart_data, height=400)
-                
-                # Fazit
-                st.subheader("Fazit")
-                
-                if local_tests["total"] > 0 and leetcode_submissions["total"] > 0:
-                    if local_success_rate > leetcode_success_rate:
-                        diff = local_success_rate - leetcode_success_rate
-                        st.info(f"Lokale Tests haben eine um {diff:.1f}% höhere Erfolgsrate als LeetCode-Submissions. Dies könnte darauf hindeuten, dass die lokalen Tests nicht alle Randfälle abdecken, die LeetCode prüft.")
-                    elif leetcode_success_rate > local_success_rate:
-                        diff = leetcode_success_rate - local_success_rate
-                        st.info(f"LeetCode-Submissions haben eine um {diff:.1f}% höhere Erfolgsrate als lokale Tests. Die lokalen Tests scheinen strenger zu sein als die LeetCode-Validierung.")
-                    else:
-                        st.info("Lokale Tests und LeetCode-Submissions haben identische Erfolgsraten. Dies deutet auf robuste und zuverlässige lokale Tests hin.")
-            else:
-                st.info("Nicht genügend Daten für einen Vergleich. Führe sowohl lokale Tests als auch LeetCode-Submissions durch.")
-        
-        # Tab 5: Heatmap (neu)
-        add_heatmap_tab(stat_tab5)
+        # Tab 4: Heatmap 
+        add_heatmap_tab(stat_tab4)
     else:
         st.info("Noch keine Ergebnisse verfügbar für Statistiken. Löse einige Probleme, um hier Statistiken zu sehen.")
         
@@ -1763,10 +1899,9 @@ with tab4:
 st.sidebar.markdown("---")
 st.sidebar.info("Entwickelt zur Evaluation von LLMs bei der Lösung von LeetCode-Problemen.")
 
-# Lösche bisherige Test-Resultate bei einer neuen Generierung
-reset_button = st.button("Tests zurücksetzen", key="reset_tests", use_container_width=True)
+# Zurücksetzen des Submission-Status
+reset_button = st.button("LeetCode-Submission zurücksetzen", key="reset_submission", use_container_width=True)
 if reset_button:
-    st.session_state.current_results = None
     # Zurücksetzen des Submission-Status
     reset_submission_state()
     st.rerun() 

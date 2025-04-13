@@ -10,7 +10,6 @@ from gpt.gpt import get_solution
 from utils.clean import extract_code_block
 from .config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, DEFAULT_PROBLEM_LIMIT, API_RETRY_DELAY
 from .prompt_generator import generate_problem_prompt
-from .test_runner import run_tests
 from .stats_manager import Statistics
 
 # Set zur Verfolgung bereits verarbeiteter Probleme
@@ -88,10 +87,14 @@ def process_difficulty(
                 stats.update_from_test_results(test_results, problem, 0)
                 continue
             
-            # Tests ausführen
-            test_results = run_tests(code, details.get('exampleTestcases', ''), slug)
+            # Keine Tests ausführen, da LeetCode dafür verwendet wird
             execution_time = time.time() - start_time
-            stats.update_from_test_results(test_results, problem, execution_time)
+            
+            # Stats mit neutralen Ergebnissen aktualisieren (ohne Test-Ergebnisse)
+            stats.update_stats(problem, execution_time, {
+                'success': None,  # Kein lokaler Test mehr
+                'code': code
+            })
             
             time.sleep(API_RETRY_DELAY)  # Verzögerung zwischen Problemen
             

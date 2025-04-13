@@ -9,7 +9,6 @@ DEFAULT_PROBLEM_LIMIT = 50
 
 # Zeitverzögerungen
 API_RETRY_DELAY = 1  # Sekunden zwischen API-Aufrufen
-TEST_DELAY = 1  # Sekunden zwischen Tests
 
 # Prompt-Einstellungen
 PROMPT_TEMPLATE = """### LeetCode Problem: {title}
@@ -27,6 +26,7 @@ Requirements for a valid solution:
 1. Use the exact method signature specified by LeetCode (e.g., `bool isValid(string s)` or `vector<int> twoSum(vector<int>& nums, int target)`).
 2. Do not include a `main()` function, test code, `cin`/`cout`, or extra I/O logic.
 3. Assume the method will be tested externally — write only the logic inside `class Solution`.
+4. IMPORTANT: DO NOT define common LeetCode structures like TreeNode, ListNode, or Node. These are already provided by LeetCode environment and redefining them causes compilation errors.
 
 The solution must:
 - Include all necessary `#include` statements at the top
@@ -50,16 +50,10 @@ Common pitfalls to avoid:
 - Don't leave any variables uninitialized
 - Don't return from void functions
 - Don't mix signed and unsigned integers
+- Don't redefine structures like TreeNode/ListNode/Node that LeetCode already provides
 
 ✅ Output only the C++ code. No explanation, no markdown, no comments. Just clean, valid, and complete code.
 """
-
-# Spezielle Problem-Behandlung
-SPECIAL_CASES = {
-    "valid-parentheses": {
-        "input_transform": lambda args: [args[0][0]] if isinstance(args, list) and len(args) >= 1 and isinstance(args[0], list) and len(args[0]) == 1 else args
-    }
-}
 
 # Export-Einstellungen
 CSV_SUMMARY_HEADERS = ["Difficulty", "Total", "Success", "Success Rate", "Compile Errors", "Runtime Errors"]

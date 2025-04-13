@@ -3,15 +3,28 @@ import time
 import os
 import json
 import logging
+import sys
+from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables with authentication credentials
 load_dotenv()
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("leetcode_api")
+# Konfiguriere Logging
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+log_filename = os.path.join(log_dir, f"leetcode_submit_{datetime.now().strftime('%Y%m%d')}.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_filename)
+    ]
+)
 
 # LeetCode authentication cookies
 LEETCODE_SESSION = os.environ.get("LEETCODE_SESSION", "")
@@ -47,11 +60,11 @@ def submit_solution(problem_slug: str, code: str, language: str = "cpp") -> Dict
     Returns:
         Dict with submission ID and status
     """
-    logger.info(f"Submitting solution for problem: {problem_slug}, language: {language}")
+    logging.info(f"Submitting solution for problem: {problem_slug}, language: {language}")
     
     # Check if authentication credentials are available
     if not LEETCODE_SESSION or not LEETCODE_CSRF:
-        logger.error("Authentication credentials not found")
+        logging.error("Authentication credentials not found")
         return {
             "success": False,
             "error": "Authentication credentials not found. Please set LEETCODE_SESSION and LEETCODE_CSRF in .env file."
@@ -63,13 +76,13 @@ def submit_solution(problem_slug: str, code: str, language: str = "cpp") -> Dict
     # First, we need to get the question ID for the problem
     question_id = get_question_id_by_slug(problem_slug)
     if not question_id:
-        logger.error(f"Could not get question ID for slug: {problem_slug}")
+        logging.error(f"Could not get question ID for slug: {problem_slug}")
         return {
             "success": False,
             "error": f"Could not get question ID for slug: {problem_slug}"
         }
     
-    logger.info(f"Got question ID: {question_id} for {problem_slug}")
+    logging.info(f"Got question ID: {question_id} for {problem_slug}")
     
     # Set up headers with authentication cookies
     headers = {
@@ -145,7 +158,7 @@ def get_question_id_by_slug(slug: str) -> Optional[str]:
     Returns:
         The question ID as a string, or None if not found
     """
-    logger.info(f"Getting question ID for slug: {slug}")
+    logging.info(f"Getting question ID for slug: {slug}")
     
     # Rate limiting
     _rate_limit()
@@ -175,24 +188,24 @@ def get_question_id_by_slug(slug: str) -> Optional[str]:
     
     try:
         response = requests.post("https://leetcode.com/graphql", json=data, headers=headers)
-        logger.info(f"Got response with status code: {response.status_code}")
+        logging.info(f"Got response with status code: {response.status_code}")
         
         if response.status_code == 200:
             result = response.json()
-            logger.info(f"GraphQL response: {json.dumps(result)[:500]}")
+            logging.info(f"GraphQL response: {json.dumps(result)[:500]}")
             
             if result and "data" in result and "question" in result["data"] and "questionId" in result["data"]["question"]:
                 question_id = result["data"]["question"]["questionId"]
-                logger.info(f"Successfully extracted question ID: {question_id}")
+                logging.info(f"Successfully extracted question ID: {question_id}")
                 return question_id
             else:
-                logger.error(f"Failed to extract question ID, structure not as expected: {json.dumps(result)[:500]}")
+                logging.error(f"Failed to extract question ID, structure not as expected: {json.dumps(result)[:500]}")
         else:
-            logger.error(f"Failed to get question ID, status code: {response.status_code}")
+            logging.error(f"Failed to get question ID, status code: {response.status_code}")
         
         return None
     except Exception as e:
-        logger.exception(f"Exception during question ID retrieval: {str(e)}")
+        logging.exception(f"Exception during question ID retrieval: {str(e)}")
         return None
 
 
@@ -206,7 +219,7 @@ def check_submission_result(submission_id: str) -> Dict[str, Any]:
     Returns:
         Dict with submission results
     """
-    logger.info(f"Checking submission result for ID: {submission_id}")
+    logging.info(f"Checking submission result for ID: {submission_id}")
     
     # Check if authentication credentials are available
     if not LEETCODE_SESSION or not LEETCODE_CSRF:
@@ -232,15 +245,15 @@ def check_submission_result(submission_id: str) -> Dict[str, Any]:
     
     try:
         response = requests.get(url, headers=headers)
-        logger.info(f"Got response with status code: {response.status_code}")
+        logging.info(f"Got response with status code: {response.status_code}")
         
         if response.status_code == 200:
             try:
                 result = response.json()
-                logger.info(f"Parsed JSON response: {json.dumps(result)[:500]}")
+                logging.info(f"Parsed JSON response: {json.dumps(result)[:500]}")
                 
                 if not result:
-                    logger.error("Empty response from LeetCode API")
+                    logging.error("Empty response from LeetCode API")
                     return {
                         "success": False,
                         "error": "Empty response from LeetCode API",
@@ -249,7 +262,7 @@ def check_submission_result(submission_id: str) -> Dict[str, Any]:
                 
                 # Check if the result is ready
                 state = result.get("state", "")
-                logger.info(f"Submission state: {state}")
+                logging.info(f"Submission state: {state}")
                 
                 if state == "SUCCESS":
                     # Safely access nested values with default values to prevent NoneType errors
@@ -285,13 +298,23 @@ def check_submission_result(submission_id: str) -> Dict[str, Any]:
                     return {
                         "success": True,
                         "pending": True,
-                        "state": state
+                        "details": result
                     }
                 else:
+                    # Wenn ein status_code vorhanden ist, ist die Submission abgeschlossen
+                    if "status_code" in result:
+                        return {
+                            "success": True,
+                            "status_code": result.get("status_code"),
+                            "language": result.get("lang", "cpp"),
+                            "details": result
+                        }
+                    
+                    # Andernfalls unbekannter Status
                     return {
-                        "success": False,
-                        "error": f"Unexpected submission state: {state}",
-                        "response": result
+                        "success": True,
+                        "unknown_state": True,
+                        "details": result
                     }
             except json.JSONDecodeError:
                 return {
@@ -353,7 +376,7 @@ def get_status_description(status_code: int) -> Tuple[str, str]:
     return status_map.get(status_code, ("Unknown Status", "gray"))
 
 
-def submit_and_wait_for_result(problem_slug: str, code: str, language: str = "cpp", max_attempts: int = 10, wait_time: float = 2.0) -> Dict[str, Any]:
+def submit_and_wait_for_result(problem_slug: str, code: str, language: str = "cpp", timeout: int = 30) -> Dict[str, Any]:
     """
     Submit a solution to LeetCode and wait for the result.
     
@@ -361,54 +384,168 @@ def submit_and_wait_for_result(problem_slug: str, code: str, language: str = "cp
         problem_slug: The LeetCode problem slug (e.g., "two-sum")
         code: The solution code to submit
         language: The programming language (default: "cpp")
-        max_attempts: Maximum number of attempts to check the result
-        wait_time: Time to wait between checks in seconds
+        timeout: Maximum time to wait for submission result in seconds
         
     Returns:
         Dict with submission results
     """
-    logger.info(f"Starting submission process for {problem_slug}")
+    logging.info(f"Starting submission process for {problem_slug}")
     
-    # Submit the solution
-    submission_result = submit_solution(problem_slug, code, language)
-    
-    if not submission_result["success"]:
-        return submission_result
-    
-    submission_id = submission_result["submission_id"]
-    
-    # Wait for the result
-    for attempt in range(max_attempts):
-        time.sleep(wait_time)
-        result = check_submission_result(submission_id)
+    try:
+        # Step 1: Submit the solution
+        submit_result = submit_solution(problem_slug, code, language)
         
-        if not result["success"]:
-            # Error occurred during check
-            return result
+        if not submit_result["success"]:
+            logging.error(f"Failed to submit solution: {submit_result.get('error')}")
+            return submit_result
+            
+        submission_id = submit_result.get("submission_id")
+        if not submission_id:
+            logging.error("No submission ID returned")
+            return {"success": False, "error": "No submission ID returned"}
+            
+        # Step 2: Wait for and check the submission result
+        start_time = time.time()
+        result = None
         
-        if result.get("pending", False):
-            # Result not ready yet, continue waiting
-            continue
-        
-        # Result is ready
-        # Add status description and color
-        if "status_code" in result:
-            status_code = result["status_code"]
-            # Ensure status_code is an integer
-            if isinstance(status_code, int):
-                description, color = get_status_description(status_code)
-                result["status_description"] = description
-                result["status_color"] = color
+        while time.time() - start_time < timeout:
+            check_result = check_submission_result(submission_id)
+            
+            # If we got a valid result with success flag
+            if check_result["success"]:
+                # LeetCode gibt zwei verschiedene Antwortformate:
+                # 1. Anfangs: {"state": "PENDING"} 
+                # 2. Bei Abschluss: {"status_code": 10, ...} ohne state-Feld
+                response_data = check_result.get("details", {})
+                
+                # Wenn status_code vorhanden ist, ist die Submission abgeschlossen
+                if "status_code" in response_data:
+                    logging.info(f"Submission abgeschlossen mit Status Code: {response_data['status_code']}")
+                    result = process_submission_result(response_data)
+                    break
+                
+                # Andernfalls prüfen wir den state
+                state = response_data.get("state", "")
+                if state in ["SUCCESS", "FAILURE"]:
+                    logging.info(f"Submission abgeschlossen mit State: {state}")
+                    result = process_submission_result(response_data)
+                    break
+                elif state == "PENDING" or state == "STARTED":
+                    logging.info(f"Submission läuft noch: {state}")
+                else:
+                    logging.info(f"Unbekannter Submission-Status: {state}")
             else:
-                # Default values if status_code is not an integer
-                result["status_description"] = str(status_code) if status_code else "Unknown Status"
-                result["status_color"] = "gray"
+                # Bei einem Fehler in der Antwort auch abbrechen
+                logging.error(f"Error checking submission: {check_result.get('error', 'Unknown error')}")
+                return {"success": False, "error": check_result.get('error', 'Unknown error during check')}
+            
+            # Wait before checking again
+            time.sleep(2)
+            
+        if result is None:
+            logging.error(f"Timed out waiting for submission result after {timeout} seconds")
+            return {"success": False, "error": f"Timeout after {timeout} seconds"}
             
         return result
     
-    # Max attempts reached without a result
-    return {
-        "success": False,
-        "error": f"Max attempts ({max_attempts}) reached without getting a result",
-        "submission_id": submission_id
-    } 
+    except Exception as e:
+        logging.error(f"Error in submission process: {str(e)}")
+        return {"success": False, "error": f"Submission error: {str(e)}"}
+
+
+def process_submission_result(response_data):
+    """
+    Process the raw submission result data into a more usable format.
+    
+    Args:
+        response_data: The raw submission result data
+        
+    Returns:
+        Processed submission result
+    """
+    result = {"success": True}
+    
+    # Copy basic fields
+    for key in ["status_code", "lang", "run_success", "status_runtime", "memory", "question_id"]:
+        if key in response_data:
+            result[key] = response_data[key]
+    
+    # Convert LeetCode status code to human-readable description
+    status_code = response_data.get("status_code")
+    if status_code is not None:
+        result["status_code"] = status_code
+        
+        # Status descriptions
+        status_map = {
+            10: "Accepted",
+            11: "Wrong Answer",
+            12: "Memory Limit Exceeded",
+            13: "Output Limit Exceeded",
+            14: "Time Limit Exceeded",
+            15: "Runtime Error",
+            16: "Internal Error",
+            20: "Compile Error",
+            21: "Unknown Error",
+            22: "Queue Empty",
+            23: "Judging",
+            24: "Partial Accepted",
+            25: "Submission Skipped",
+            30: "System Error"
+        }
+        
+        result["status_description"] = status_map.get(status_code, f"Unknown Status ({status_code})")
+    
+    # Extract runtime information if available
+    if "status_runtime" in response_data:
+        runtime_str = response_data["status_runtime"]
+        try:
+            # Parse runtime (e.g., "10 ms" -> 10)
+            runtime_value = runtime_str.split()[0]
+            result["runtime_ms"] = int(runtime_value) if runtime_value.isdigit() else float(runtime_value)
+        except (ValueError, IndexError):
+            result["runtime_ms"] = None
+    
+    # Extract memory information if available
+    if "memory" in response_data:
+        try:
+            # Convert memory from bytes to MB
+            result["memory_percentile"] = round(response_data["memory"] / (1024 * 1024), 2)
+        except (ValueError, TypeError):
+            result["memory_percentile"] = None
+    
+    # Extract test case information
+    if "total_correct" in response_data:
+        result["total_testcases"] = response_data.get("total_testcases", response_data["total_correct"])
+        result["passed_testcases"] = response_data["total_correct"]
+    
+    # Extract error details for different error types
+    # Compile errors
+    if status_code == 20:  # Compile Error
+        if "compile_error" in response_data:
+            result["compile_error"] = response_data["compile_error"]
+        
+        if "full_compile_error" in response_data:
+            result["full_compile_error"] = response_data["full_compile_error"]
+    
+    # Runtime errors
+    if status_code == 15:  # Runtime Error
+        if "runtime_error" in response_data:
+            result["runtime_error"] = response_data["runtime_error"]
+        
+        if "full_runtime_error" in response_data:
+            result["full_runtime_error"] = response_data["full_runtime_error"]
+        
+        if "last_testcase" in response_data:
+            result["last_testcase"] = response_data["last_testcase"]
+    
+    # Wrong answer details
+    if status_code == 11:  # Wrong Answer
+        for key in ["expected_output", "code_output", "last_testcase", "std_output", "compare_result"]:
+            if key in response_data:
+                result[key] = response_data[key]
+    
+    # Include raw response for debugging (except potentially large fields)
+    raw_response = {k: v for k, v in response_data.items() if k not in ["judge_type", "code_answer", "expected_code_answer"]}
+    result["raw_response"] = raw_response
+    
+    return result 

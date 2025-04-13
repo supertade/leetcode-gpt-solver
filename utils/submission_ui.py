@@ -19,6 +19,17 @@ def show_submission_section(problem_slug: str, code: str, language: str = "cpp")
         # Cleaner header layout with smaller font 
         st.markdown("<h3 style='font-size: 1.3rem; margin-bottom: 1rem;'>LeetCode Submission</h3>", unsafe_allow_html=True)
         
+        # Determine language based on problem type (in the background)
+        is_db_problem = is_database_problem(problem_slug, "Unknown Title")
+        
+        # Set default language based on problem type
+        if is_db_problem:
+            if 'submission_language' not in st.session_state:
+                st.session_state.submission_language = "mysql"  # Default für SQL-Probleme
+        else:
+            if 'submission_language' not in st.session_state:
+                st.session_state.submission_language = "cpp"  # Default für normale Probleme
+        
         # Submission controls row
         col1, col2 = st.columns([3, 1])
         
@@ -58,8 +69,11 @@ def show_submission_section(problem_slug: str, code: str, language: str = "cpp")
             with st.spinner("Submitting to LeetCode..."):
                 st.session_state.submission_status = "pending"
                 
+                # Use selected language instead of default
+                active_language = st.session_state.submission_language
+                
                 # Submit the solution and wait for result
-                result = submit_and_wait_for_result(problem_slug, code, language)
+                result = submit_and_wait_for_result(problem_slug, code, active_language)
                 
                 if result["success"] and "status_code" in result:
                     # Save previous result for comparison if we have a current result
@@ -93,6 +107,52 @@ def show_submission_section(problem_slug: str, code: str, language: str = "cpp")
             show_submission_result(st.session_state.submission_result, st.session_state.previous_results)
 
 
+def is_database_problem(problem_slug: str, title: str) -> bool:
+    """
+    Determines if a problem is likely a database/SQL problem based on slug and title.
+    
+    Args:
+        problem_slug: The LeetCode problem slug
+        title: The problem title
+        
+    Returns:
+        Boolean indicating if it's a database problem
+    """
+    # List of keywords that suggest a database problem
+    db_keywords = [
+        "sql", "database", "query", "select", "join", "order by", "group by", 
+        "employee", "customer", "department", "table", "clause", "having",
+        "delete", "update", "insert", "distinct", "aggregate", "null"
+    ]
+    
+    # Common database problem slugs on LeetCode
+    known_db_slugs = [
+        "employees-earning-more-than-their-managers",
+        "duplicate-emails", 
+        "customers-who-never-order",
+        "combine-two-tables",
+        "second-highest-salary",
+        "nth-highest-salary",
+        "rank-scores",
+        "department-highest-salary",
+        "department-top-three-salaries",
+        "consecutive-numbers",
+        "rising-temperature"
+    ]
+    
+    # Check if the slug is a known database problem
+    if problem_slug in known_db_slugs:
+        return True
+    
+    # Check if slug or title contains database keywords
+    slug_and_title = (problem_slug + " " + title).lower()
+    for keyword in db_keywords:
+        if keyword in slug_and_title:
+            return True
+    
+    return False
+
+
 def save_leetcode_result_to_stats(result, problem_slug, success=None):
     """
     Save LeetCode submission result to the global statistics.
@@ -111,6 +171,17 @@ def save_leetcode_result_to_stats(result, problem_slug, success=None):
     # Extract relevant data
     difficulty = st.session_state.current_problem.get('difficulty', 'unknown')
     title = st.session_state.current_problem.get('title', 'Unknown Problem')
+    
+    # Ensure difficulty is valid (easy, medium, hard)
+    if difficulty not in ['easy', 'medium', 'hard']:
+        difficulty = 'unknown'
+        # Try to infer from the problem title or slug
+        if 'easy' in problem_slug.lower() or 'easy' in title.lower():
+            difficulty = 'easy'
+        elif 'medium' in problem_slug.lower() or 'medium' in title.lower():
+            difficulty = 'medium'
+        elif 'hard' in problem_slug.lower() or 'hard' in title.lower():
+            difficulty = 'hard'
     
     # Determine if the submission was successful
     is_success = success
@@ -132,29 +203,105 @@ def save_leetcode_result_to_stats(result, problem_slug, success=None):
         else:
             error_type = "unknown_error_leetcode"
     
+    # Get error message
+    error_message = None
+    if error_type == "compile_error_leetcode" and is_database_problem(problem_slug, title):
+        error_message = "SQL problem submitted as C++ but missing main() function"
+    elif error_type == "wrong_answer_leetcode":
+        error_message = f"Expected: {result.get('expected_output', 'N/A')[:100]}..., Got: {result.get('code_output', 'N/A')[:100]}..."
+    elif error_type == "runtime_error_leetcode":
+        error_message = result.get("runtime_error", "N/A")
+    elif error_type == "performance_error_leetcode":
+        error_message = result.get("error", "N/A")
+    elif error_type == "unknown_error_leetcode":
+        error_message = result.get("error", "N/A")
+    
     # Create result entry for statistics
     from datetime import datetime
     
-    # Get the solution code
+    # Get the solution code and model information
     code = None
+    model = None
+    temperature = None
+    
     if st.session_state.current_solution and "code" in st.session_state.current_solution:
         code = st.session_state.current_solution["code"]
+    
+    # Get model and temperature from sidebar if available
+    from streamlit import session_state
+    if 'model' in session_state:
+        model = session_state.get('model', 'Unknown')
+        if 'model_version' in session_state and session_state.model_version:
+            model = f"{model}:{session_state.model_version}"
+    
+    if 'temperature' in session_state:
+        temperature = session_state.get('temperature', 0.7)
+    
+    # Extrahiere detaillierte Fehlerinformationen
+    full_compile_error = result.get("full_compile_error", None)
+    compile_error = result.get("compile_error", None)
+    runtime_error = result.get("runtime_error", None)
+    wrong_answer_details = None
+    
+    # Für Wrong Answer, extrahiere erwartete und tatsächliche Ausgabe
+    if error_type == "wrong_answer_leetcode":
+        expected_output = result.get("expected_output", None)
+        actual_output = result.get("code_output", None)
+        if expected_output and actual_output:
+            wrong_answer_details = {
+                "expected": expected_output,
+                "actual": actual_output,
+                "last_testcase": result.get("last_testcase", None)
+            }
+    
+    # Identifiziere, ob es sich um ein SQL-Problem handelt
+    is_sql_problem = is_database_problem(problem_slug, title)
+    
+    # Bei Compile-Fehlern für SQL-Probleme, spezifischen Fehlertyp vergeben
+    if error_type == "compile_error_leetcode" and is_sql_problem:
+        if full_compile_error and "undefined symbol: main" in full_compile_error:
+            error_type = "sql_missing_main_error"
+            compile_error = "SQL problem submitted as C++ but missing main() function"
+    
+    # Füge den error_message String hinzu, der in der UI angezeigt wird
+    if error_message:
+        error_message = f"Error: {error_message}"
     
     result_entry = {
         "slug": problem_slug,
         "title": title,
         "success": is_success,
         "error_type": error_type,
+        "error_message": error_message,  # Neu: error_message für UI
+        "is_sql_problem": is_sql_problem,  # Neu: ist es ein SQL-Problem?
         "solution": code,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "submission_type": "leetcode_api",  # Mark as LeetCode submission
         "runtime_ms": result.get("runtime_ms"),
         "memory_mb": result.get("memory_percentile"),
-        "leetcode_status": result.get("status_description", result.get("result", "Unknown"))
+        "leetcode_status": result.get("status_description", result.get("result", "Unknown")),
+        "model": model,
+        "temperature": temperature,
+        # Detaillierte Fehlerinformationen
+        "full_compile_error": full_compile_error,
+        "compile_error": compile_error,
+        "runtime_error": runtime_error,
+        "wrong_answer_details": wrong_answer_details,
+        "raw_result": {k: v for k, v in result.items() if k not in ["details"]}  # Speichere das Rohergebnis ohne zu große Daten
     }
     
     # Add to statistics if difficulty is valid
     if difficulty in st.session_state.results:
+        # Check if this is a duplicate submission
+        for idx, existing_entry in enumerate(st.session_state.results[difficulty]):
+            if (existing_entry.get('slug') == problem_slug and 
+                existing_entry.get('model') == model and
+                existing_entry.get('solution') == code):
+                # Update existing entry instead of adding a new one
+                st.session_state.results[difficulty][idx] = result_entry
+                return
+        
+        # If not a duplicate, add as new entry
         st.session_state.results[difficulty].append(result_entry)
 
 
@@ -304,14 +451,146 @@ def show_submission_result(result: Dict[str, Any], previous_results: list = None
 
 
 def reset_submission_state():
-    """
-    Reset the submission-related session state variables.
-    """
+    """Reset the submission state in the session."""
     if 'submission_status' in st.session_state:
-        del st.session_state.submission_status
-    
+        st.session_state.submission_status = "ready"
     if 'submission_result' in st.session_state:
-        del st.session_state.submission_result
+        st.session_state.submission_result = None
+
+
+def submit_to_leetcode(problem_slug: str, code: str, language: str = "cpp") -> Dict[str, Any]:
+    """
+    Submit solution to LeetCode and return the result.
+    Also save the result to statistics.
     
-    if 'previous_results' in st.session_state:
-        del st.session_state.previous_results 
+    Args:
+        problem_slug: The LeetCode problem slug
+        code: The solution code
+        language: The programming language (default: "cpp")
+        
+    Returns:
+        Dictionary with submission result
+    """
+    # Submit the solution and wait for result
+    result = submit_and_wait_for_result(problem_slug, code, language)
+    
+    # Initialize or update problem information
+    if 'active_problems' in st.session_state and problem_slug in st.session_state.active_problems:
+        # Use the active problem info
+        problem_info = st.session_state.active_problems[problem_slug]
+        difficulty = problem_info.get('difficulty', 'unknown')
+        title = problem_info.get('title', 'Unknown Problem')
+    else:
+        # Try to get information from current problem
+        if 'current_problem' in st.session_state and st.session_state.current_problem:
+            difficulty = st.session_state.current_problem.get('difficulty', 'unknown') 
+            title = st.session_state.current_problem.get('title', 'Unknown Problem')
+        else:
+            # No problem information available
+            difficulty = 'unknown'
+            title = 'Unknown Problem'
+    
+    # Check if the submission was successful
+    is_success = (result.get("status_code", 0) == 10)  # Status code 10 is Accepted in LeetCode
+    
+    # Get error type if applicable
+    error_type = None
+    if not is_success:
+        status_code = result.get("status_code", 0)
+        if status_code == 11:
+            error_type = "wrong_answer_leetcode"
+        elif status_code == 20:
+            error_type = "compile_error_leetcode"
+        elif status_code in [12, 13, 14]:
+            error_type = "performance_error_leetcode"
+        elif status_code == 15:
+            error_type = "runtime_error_leetcode"
+        else:
+            error_type = "unknown_error_leetcode"
+    
+    # Create result entry for statistics
+    from datetime import datetime
+    
+    # Get model and temperature from sidebar if available
+    from streamlit import session_state
+    model = session_state.get('model', 'Unknown')
+    if 'model_version' in session_state and session_state.model_version:
+        model = f"{model}:{session_state.model_version}"
+    
+    temperature = session_state.get('temperature', 0.7)
+    
+    # Extrahiere detaillierte Fehlerinformationen
+    full_compile_error = result.get("full_compile_error", None)
+    compile_error = result.get("compile_error", None)
+    runtime_error = result.get("runtime_error", None)
+    wrong_answer_details = None
+    
+    # Für Wrong Answer, extrahiere erwartete und tatsächliche Ausgabe
+    if error_type == "wrong_answer_leetcode":
+        expected_output = result.get("expected_output", None)
+        actual_output = result.get("code_output", None)
+        if expected_output and actual_output:
+            wrong_answer_details = {
+                "expected": expected_output,
+                "actual": actual_output,
+                "last_testcase": result.get("last_testcase", None)
+            }
+    
+    # Identifiziere, ob es sich um ein SQL-Problem handelt
+    is_sql_problem = is_database_problem(problem_slug, title)
+    
+    # Bei Compile-Fehlern für SQL-Probleme, spezifischen Fehlertyp vergeben
+    if error_type == "compile_error_leetcode" and is_sql_problem:
+        if full_compile_error and "undefined symbol: main" in full_compile_error:
+            error_type = "sql_missing_main_error"
+            compile_error = "SQL problem submitted as C++ but missing main() function"
+    
+    # Füge den error_message String hinzu, der in der UI angezeigt wird
+    error_message = None
+    if compile_error:
+        error_message = compile_error
+    elif full_compile_error:
+        error_message = full_compile_error
+    elif runtime_error:
+        error_message = runtime_error
+    elif wrong_answer_details:
+        error_message = f"Expected: {wrong_answer_details['expected'][:100]}..., Got: {wrong_answer_details['actual'][:100]}..."
+    
+    result_entry = {
+        "slug": problem_slug,
+        "title": title,
+        "success": is_success,
+        "error_type": error_type,
+        "error_message": error_message,  # Neu: error_message für UI
+        "is_sql_problem": is_sql_problem,  # Neu: ist es ein SQL-Problem?
+        "solution": code,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "submission_type": "leetcode_api",  # Mark as LeetCode submission
+        "runtime_ms": result.get("runtime_ms"),
+        "memory_mb": result.get("memory_percentile"),
+        "leetcode_status": result.get("status_description", result.get("result", "Unknown")),
+        "model": model,
+        "temperature": temperature,
+        # Detaillierte Fehlerinformationen
+        "full_compile_error": full_compile_error,
+        "compile_error": compile_error,
+        "runtime_error": runtime_error,
+        "wrong_answer_details": wrong_answer_details,
+        "raw_result": {k: v for k, v in result.items() if k not in ["details"]}  # Speichere das Rohergebnis ohne zu große Daten
+    }
+    
+    # Add to statistics if results initialized and difficulty is valid
+    if 'results' in st.session_state and difficulty in st.session_state.results:
+        # Check if this is a duplicate submission
+        for idx, existing_entry in enumerate(st.session_state.results[difficulty]):
+            if (existing_entry.get('slug') == problem_slug and 
+                existing_entry.get('model') == model and
+                existing_entry.get('solution') == code):
+                # Update existing entry instead of adding a new one
+                st.session_state.results[difficulty][idx] = result_entry
+                return result
+        
+        # If not a duplicate, add as new entry
+        st.session_state.results[difficulty].append(result_entry)
+    
+    return result 
